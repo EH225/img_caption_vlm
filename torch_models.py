@@ -757,7 +757,7 @@ class VisionLanguageTransformer(nn.Module):
                 word_indices = torch.argmax(output_logits, axis=1)  # (N, )
 
                 # Update the captions output and the current partial captions tensor
-                captions[:, t] = word_indices.numpy()
+                captions[:, t] = word_indices.cpu().numpy()
                 captions[eos_mask, t] = self._pad # Replace with the padding token beyond </s>
                 eos_mask = eos_mask & (captions[:, t] == self._end) # Update the end of sentence bool flags
                 if eos_mask.sum() == len(eos_mask):  # Stop early if all outputs have reached their </s> token
