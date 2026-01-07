@@ -73,7 +73,7 @@ if __name__ == "__main__":
                 "use_latest_checkpoint": False,
             }
         }
-    else: # Set up a config for prod training, set parameters for each component
+    else:  # Set up a config for prod training, set parameters for each component
         config = {
             "VisionLanguageTransformer": {
                 "img_size": 224,
