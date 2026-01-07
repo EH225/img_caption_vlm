@@ -566,6 +566,9 @@ class VisionLanguageTransformer(nn.Module):
         # A final projection layer from the outputs of the decoder to the vocab space
         self.vocab_proj = nn.Linear(embed_dim, self.vocab_size)
 
+        self.register_buffer('device_param', torch.empty(0)) # A dummy param to tracking the device of this
+        # model during later calls
+
         # 3). Initialize the weights of the network randomly
         self.apply(self._init_weights)
 
@@ -636,7 +639,8 @@ class VisionLanguageTransformer(nn.Module):
 
         # 4). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
         # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
-        tgt_mask = torch.tril(torch.ones(T, T))  # Lower right triangular matrix of 1s to prevent lookahead
+        # Lower right triangular matrix of 1s to prevent lookahead
+        tgt_mask = torch.tril(torch.ones(T, T), device=self.device_param.device)
 
         # 5). Pass the captions embeddings through a transformer block so that each word can attend to the
         # prior caption words (causal self-attention) and also to all the image features (cross-attention)
