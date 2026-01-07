@@ -47,7 +47,6 @@ class MultiHeadedAttention(nn.Module):
         :param dropout: The probability of dropout used during training.
         """
         super().__init__()
-        assert embed_dim % 2 == 0, f"embed_dim expected to be even, but got {embed_dim}"
 
         # Create linear transforms from input (token embeddings + positional embeddings) to key, query, and
         # value vectors using a nn.Linear layer to perform the matrix multiplication of learned weights
@@ -553,12 +552,12 @@ class VisionLanguageTransformer(nn.Module):
         self.sp_model = sp_model
 
         # Record the word indices of special word tokens
-        self._null, self._start, self._end = sp_model.pad_id(), sp_model.bos_id(), sp_model.eos_id()
+        self._pad, self._start, self._end = sp_model.pad_id(), sp_model.bos_id(), sp_model.eos_id()
 
         # Projects the output of the encoder into features to be input into the decoder
         self.visual_projection = nn.Linear(embed_dim, embed_dim)
         # An embedding layer to convert word indices to word vectors
-        self.word_idx_embed = nn.Embedding(self.vocab_size, embed_dim, padding_idx=self._null)
+        self.word_idx_embed = nn.Embedding(self.vocab_size, embed_dim, padding_idx=self._pad)
         # A positional embedding layer for the positional indices of the work tokens
         self.word_pos_embed = PositionalEmbedding(embed_dim, dropout, max_length)
         # Construct the language decoder with cross-attention to the image patches embeddings from the encoder
@@ -687,7 +686,7 @@ class VisionLanguageTransformer(nn.Module):
 
         # Zero out, probabilities for which we have nothing in the target text i.e. the padding, create a bool
         # mask of 0s and 1s by checking that each entry is not equal to the <pad> token, 0s == padding token
-        target_masks = (target_word_idx != self._null).float()  # (B, T)
+        target_masks = (target_word_idx != self._pad).float()  # (B, T)
 
         # Compute the log probability of generating the true target words provided in this obs i.e. compute
         # the cross-entropy loss by pulling out the model's y-hat values for the true target words. For each
@@ -734,13 +733,15 @@ class VisionLanguageTransformer(nn.Module):
             img_features = self.encode(imgs)  # Process the images and generate image features (N, S, E)
 
             # Create an empty captions tensor to record the outputs, where all tokens are NULL initially
-            captions = self._null * np.ones((N, max_length), dtype=np.int32)  # Record ints (N, max_len)
+            captions = self._pad * np.ones((N, max_length), dtype=np.int32)  # Record ints (N, max_len)
 
             # Create a starting partial caption to begin to decoding sequence for each using the start token
             partial_captions = self._start * np.ones(N, dtype=np.int32)  # (N, )
             partial_captions = torch.LongTensor(partial_captions)
             partial_captions = partial_captions.unsqueeze(1)  # (N, 1) = (batch_size, decode seq len)
 
+            # Record True for each sentence in the batch if it has reached the </s> token
+            eos_mask = np.zeros(N, dtype=bool)
             for t in range(max_length):  # Run the decoding time steps to fill in the caption word idx
                 # Predict the next token index for all images in the input batch
                 # TODO: could be made more efficient by using a key-value cache during decoding
@@ -752,7 +753,12 @@ class VisionLanguageTransformer(nn.Module):
                 word_indices = torch.argmax(output_logits, axis=1)  # (N, )
 
                 # Update the captions output and the current partial captions tensor
-                captions[:, t] = word_indices.numpy()  # Record the integers in the numpy array to be returned
+                captions[:, t] = word_indices.numpy()
+                captions[eos_mask, t] = self._pad # Replace with the padding token beyond </s>
+                eos_mask = eos_mask & (captions[:, t] == self._end) # Update the end of sentence bool flags
+                if eos_mask.sum() == len(eos_mask):  # Stop early if all outputs have reached their </s> token
+                    break
+
                 word_indices = word_indices.unsqueeze(1)  # (N, 1)
                 partial_captions = torch.cat([partial_captions, word_indices], dim=1)  # (N, t) -> (N, t+1)
 

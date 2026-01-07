@@ -10,6 +10,7 @@ import sentencepiece as spm
 from torch_models import VisionLanguageTransformer
 from dataset_utils import get_dataloader
 from vlm_trainer import Trainer
+from utils import get_device
 from typing import Dict
 import argparse
 
@@ -57,7 +58,8 @@ if __name__ == "__main__":
             },
             "DataLoader": {
                 "split": "train",
-                "batch_size": 5,
+                "batch_size": 32,
+                "device": get_device().type,
             },
             "Trainer": {
                 "lr": 1e-3,
@@ -86,6 +88,7 @@ if __name__ == "__main__":
             "DataLoader": {
                 "split": "train",
                 "batch_size": 128,
+                "device": get_device().type,
             },
             "Trainer": {
                 "lr": 1e-3,

@@ -120,7 +120,12 @@ class Trainer:
         self.vlm.train()  # Make sure to set the model to train mode for training
 
         infinite_dataloader = itertools.cycle(self.dataloader)
-        scaler = torch.cuda.amp.GradScaler()
+        if self.amp_dtype is not None:
+            if self.device.type != 'cuda':
+                print("AMP with FP16 requires CUDA")
+                self.amp_dtype = None
+            else:
+                scaler = torch.amp.GradScaler('cuda')
 
         with tqdm(initial=self.step, total=self.train_num_steps) as pbar:
 
@@ -142,13 +147,17 @@ class Trainer:
                     loss = self.vlm.compute_loss(outputs, captions, eps)
 
                 if self.amp_dtype == torch.float16:
-                    scaler.scale(loss).backward()  # Compute gradients wrt the parameters of the model
+                    scaler.scale(loss).backward()
+                    if self.grad_clip is not None:
+                        scaler.unscale_(self.opt)  # Unscale before clipping
+                        torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                    scaler.step(self.opt)  # Update the model parameters by taking a gradient step
+                    scaler.update()
                 else:
-                    loss.backward()  # Compute gradients wrt the parameters of the model
-
-                if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
-                self.opt.step()  # Update the model parameters by taking a gradient step
+                    loss.backward()
+                    if self.grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                    self.opt.step()  # Update the model parameters by taking a gradient step
 
                 pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
