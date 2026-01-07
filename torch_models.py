@@ -741,7 +741,7 @@ class VisionLanguageTransformer(nn.Module):
 
             # Create a starting partial caption to begin to decoding sequence for each using the start token
             partial_captions = self._start * np.ones(N, dtype=np.int32)  # (N, )
-            partial_captions = torch.LongTensor(partial_captions)
+            partial_captions = torch.LongTensor(partial_captions).to(self.device_param.device)
             partial_captions = partial_captions.unsqueeze(1)  # (N, 1) = (batch_size, decode seq len)
 
             # Record True for each sentence in the batch if it has reached the </s> token
