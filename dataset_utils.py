@@ -229,10 +229,11 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = "c
     sp = spm.SentencePieceProcessor()
     sp.load(vocab_model_path)
     dataset = CocoCaptionDataset(image_dir, caption_path, image_transforms)
-    if device == "cuda":
-        num_workers, pin_memory, persistent_workers = 4, True, True
-    else:
-        num_workers, pin_memory, persistent_workers = 0, False, False
+    # if device == "cuda":
+    #     num_workers, pin_memory, persistent_workers = 4, True, True
+    # else:
+    #     num_workers, pin_memory, persistent_workers = 0, False, False
+    num_workers, pin_memory, persistent_workers = 0, False, False
     return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                       pin_memory=pin_memory, persistent_workers=persistent_workers,
                       collate_fn=lambda b: collate_fn(b, pad_token_id=sp.pad_id()))
