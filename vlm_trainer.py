@@ -135,7 +135,7 @@ class Trainer:
                 images = batch["images"].to(self.device, non_blocking=True)
                 captions = batch["captions"].to(self.device, non_blocking=True)
 
-                self.opt.zero_grad()  # Zero the gradients of the optimizer before computing the loss
+                self.opt.zero_grad(set_to_none=True)  # Zero the gradients of the optimizer before computing the loss
                 # Compute the forward-pass through the model and compute a tensor that is the same shape
                 # along the first 2 dims as captions but also gives the prob dist across the vocab
                 if self.amp_dtype is not None:
@@ -166,6 +166,7 @@ class Trainer:
 
                 if self.step % self.save_every == 0:  # Periodically save the model weights to disk
                     self.save(self.step)
+                    torch.cuda.empty_cache()
 
                 if self.step % self.sample_every == 0:  # Periodically generate samples from the model
                     print(f"\nGenerating samples at step={self.step}")
@@ -181,5 +182,10 @@ class Trainer:
                         print(f"Actual:    {y}")
                     print()
                     self.vlm.train()  # Switch back to training mode once finished
+
+                del outputs, loss, images, captions
+
+                if self.step % 50 == 0:
+                    print(torch.cuda.memory_allocated() / 1e9, "GB")
 
                 pbar.update(1)

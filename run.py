@@ -15,7 +15,7 @@ from typing import Dict
 import argparse
 
 
-def train_model(config: Dict) -> None:
+def train_model(config: Dict) -> None: # TODO: Add a dataset dir thing here as an input param
     """
     Runs training for the model using the configurations specified in the config file which can contain
     configurations for the Vision-Language model and the Trainer objects.
