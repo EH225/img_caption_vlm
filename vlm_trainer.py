@@ -6,6 +6,7 @@ from torch.optim import AdamW
 from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption
 import logging
+import psutil
 from pathlib import Path
 from torch.utils.data import DataLoader
 from torch_models import VisionLanguageTransformer
@@ -76,6 +77,7 @@ class Trainer:
             )
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
+        self.logger.propagate = False
 
         self.vlm = vlm  # The vision-language model
         self.logger.info(f"Number of model parameters: {sum(p.numel() for p in vlm.parameters())}")
@@ -204,9 +206,14 @@ class Trainer:
                 pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}",
                                  grad=f"{grad_norm:.3f}", logit_std=f"{outputs.std(dim=-1).mean():.3f}")
 
-                if self.step % 50 == 0: # Periodically log the loss and other training metrics
-                    self.logger.info((f"loss=f{loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
+                if self.step % 500 == 0: # Periodically log the loss and other training metrics
+                    self.logger.info((f"loss={loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
                                       f"grad={grad_norm:.3f}, logit_std={outputs.std(dim=-1).mean():.3f}"))
+                    gpu_mem_used = torch.cuda.memory_allocated() / 1e9
+                    cpu_mem_used = psutil.virtual_memory().used / 1e9
+                    msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
+                    self.logger.info(msg)
+
                 # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
 
