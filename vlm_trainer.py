@@ -7,6 +7,12 @@ from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption
 
 
+def infinite_loader(dl):
+    while True:
+        for batch in dl:
+            yield batch
+
+
 class Trainer:
     def __init__(self, vlm, dataloader, lr: float = 1e-3, weight_decay: float = 1e-3,
                  train_num_steps: int = 100000, adam_betas: Tuple[float] = (0.9, 0.99),
@@ -119,7 +125,7 @@ class Trainer:
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
 
-        infinite_dataloader = itertools.cycle(self.dataloader)
+        infinite_dataloader = infinite_loader(self.dataloader) # Does not cache batches
         if self.amp_dtype is not None:
             if self.device.type != 'cuda':
                 print("AMP with FP16 requires CUDA")
@@ -159,7 +165,8 @@ class Trainer:
                         torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
                     self.opt.step()  # Update the model parameters by taking a gradient step
 
-                pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
+                pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}")
+                # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
 
                 self.step += 1
@@ -185,7 +192,7 @@ class Trainer:
 
                 del outputs, loss, images, captions
 
-                if self.step % 50 == 0:
-                    print(torch.cuda.memory_allocated() / 1e9, "GB")
+                # if self.step % 50 == 0: # For debugging GPU RAM usage during training
+                #     print(torch.cuda.memory_allocated() / 1e9, "GB")
 
                 pbar.update(1)
