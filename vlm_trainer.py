@@ -50,37 +50,12 @@ class Trainer:
         super().__init__()
 
         assert results_folder is not None, "You must specify results folder to save the outputs"
-        self.vlm = vlm  # The vision-language model
-        print("Number of model parameters:", sum(p.numel() for p in vlm.parameters()))
-        self.device = get_device()  # Auto-detect what device to use for training
-        self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
-        self.amp_dtype = get_amp_dtype(self.device.type) if use_amp else None
-        self.save_every = save_every  # The frequency of saving model weights
-        self.num_samples = 5  # The number of samples to generate periodically print
-        self.sample_every = sample_every  # How often to generate samples
-        self.train_num_steps = train_num_steps  # The total number of training steps
-
-        # Set the dataset and dataloader
-        self.dataloader_train = dataloader_train
-        self.dataloader_val = dataloader_val
-
-        # Configure the optimizer for training
-        self.opt = AdamW(self.vlm.parameters(), lr=lr, betas=adam_betas, weight_decay=weight_decay)
 
         self.results_folder = results_folder  # A directory where the checkpoints will be saved
         os.makedirs(self.results_folder, exist_ok=True)  # Create the directory if not already there
 
         self.checkpoints_folder = os.path.join(self.results_folder, "checkpoints/")
         os.makedirs(self.checkpoints_folder, exist_ok=True)  # Create the directory if not already there
-
-        self.step = 0  # Training step counter
-        self.all_losses = []  # Aggregate loss values during training
-
-        if use_latest_checkpoint:
-            checkpoints = os.listdir(self.checkpoints_folder)
-            if len(checkpoints) > 0:
-                last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
-                self.load(last_checkpoint)  # Load in the most recent milestone to continue training
 
         # Set up logging during training
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -101,6 +76,32 @@ class Trainer:
             )
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
+
+        self.vlm = vlm  # The vision-language model
+        self.logger.info("Number of model parameters:", sum(p.numel() for p in vlm.parameters()))
+        self.device = get_device()  # Auto-detect what device to use for training
+        self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
+        self.amp_dtype = get_amp_dtype(self.device.type) if use_amp else None
+        self.save_every = save_every  # The frequency of saving model weights
+        self.num_samples = 5  # The number of samples to generate periodically print
+        self.sample_every = sample_every  # How often to generate samples
+        self.train_num_steps = train_num_steps  # The total number of training steps
+
+        # Set the dataset and dataloader
+        self.dataloader_train = dataloader_train
+        self.dataloader_val = dataloader_val
+
+        # Configure the optimizer for training
+        self.opt = AdamW(self.vlm.parameters(), lr=lr, betas=adam_betas, weight_decay=weight_decay)
+
+        self.step = 0  # Training step counter
+        self.all_losses = []  # Aggregate loss values during training
+
+        if use_latest_checkpoint:
+            checkpoints = os.listdir(self.checkpoints_folder)
+            if len(checkpoints) > 0:
+                last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
+                self.load(last_checkpoint)  # Load in the most recent milestone to continue training
 
     def save(self, milestone: int) -> None:
         """
