@@ -162,10 +162,11 @@ class Trainer:
                 else:
                     loss.backward()
                     if self.grad_clip is not None:
-                        torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
                     self.opt.step()  # Update the model parameters by taking a gradient step
 
-                pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}")
+                pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}",
+                                 grad=f"{grad_norm:.3f}", logit_std=f"{outputs.std(dim=-1).mean()}")
                 # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
 
