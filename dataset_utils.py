@@ -15,6 +15,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Dict, List
 from pycocotools.coco import COCO
+from utils import get_device
 
 
 ############################
@@ -168,7 +169,8 @@ def collate_fn(batch: List[Dict], pad_token_id: int) -> Dict:
     images = torch.stack([b["image"] for b in batch])
     captions = [b["caption"] for b in batch]
     captions = pad_sequence(captions, batch_first=True, padding_value=pad_token_id)
-    return {"images": images, "captions": captions}
+    image_names = [b["image_name"] for b in batch]
+    return {"images": images, "captions": captions, "image_names": image_names}
 
 
 class CocoCaptionDataset(Dataset):
@@ -202,10 +204,10 @@ class CocoCaptionDataset(Dataset):
         caption = random.choice(self.captions[image_id])  # Sample a random caption associated with this image
 
         # Return the data as a dict, torch.FloatTensor [3,224,224], torch.IntTensor(len(caption))
-        return {"image": image, "caption": torch.tensor(caption, dtype=torch.long)}
+        return {"image": image, "caption": torch.tensor(caption, dtype=torch.long), "image_name": image_name}
 
 
-def get_dataloader(split: str = "train", batch_size: int = 128, device: str = "cuda",
+def get_dataloader(split: str = "train", batch_size: int = 128, device: str = None,
                    dataset_dir: str = None) -> DataLoader:
     """
     This method returns a DataLoader object by loading in the pre-processed dataset from disk.
@@ -215,7 +217,8 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = "c
     :param device: A string denoting the device.
     :returns: A DataLoader object with the dataset split specified loaded.
     """
-    dataset_dir = CURRENT_DIR if dataset_dir is None else dataset_dir
+    device = device if device is not None else get_device()
+    dataset_dir = os.path.join(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
     image_dir = os.path.join(dataset_dir, f"images/{split}2017")
     caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
     image_transforms = transforms.Compose([

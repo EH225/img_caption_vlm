@@ -15,10 +15,13 @@ from typing import Dict
 import argparse
 
 
-def train_model(config: Dict) -> None: # TODO: Add a dataset dir thing here as an input param
+def train_model(config: Dict) -> None:
     """
     Runs training for the model using the configurations specified in the config file which can contain
     configurations for the Vision-Language model and the Trainer objects.
+
+    :param config: A config dictionary containing parameters for various aspects of the training loop.
+    :returns: None. Results are saved to disk.
     """
     # 1). Read in the sub-word sentence piece vocab model derived from the training captions
     sp_model = spm.SentencePieceProcessor()
@@ -28,11 +31,12 @@ def train_model(config: Dict) -> None: # TODO: Add a dataset dir thing here as a
     vlm = VisionLanguageTransformer(sp_model=sp_model, **config.get("VisionLanguageTransformer", {}))
     # print("Number of parameters:", sum(p.numel() for p in vlm.parameters()))
 
-    # 3). Construct the COCO training dataset loader
-    dataloader = get_dataloader(**config.get("DataLoader", {}))
+    # 3). Construct the COCO training dataset loader and validation dataset loader
+    dataloader_train = get_dataloader(split='train', **config.get("DataLoader", {}))
+    dataloader_val = get_dataloader(split='val', **config.get("DataLoader", {}))
 
     # 4). Configure the training pipeline
-    trainer = Trainer(vlm, dataloader, **config.get("Trainer", {}))
+    trainer = Trainer(vlm, dataloader_train, dataloader_val, **config.get("Trainer", {}))
 
     # 5). Train the model to completion
     trainer.train()
@@ -57,9 +61,9 @@ if __name__ == "__main__":
                 "dropout": 0.1,
             },
             "DataLoader": {
-                "split": "train",
                 "batch_size": 32,
                 "device": get_device().type,
+                "dataset_dir":  f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
                 "lr": 1e-3,
@@ -86,9 +90,9 @@ if __name__ == "__main__":
                 "dropout": 0.1,
             },
             "DataLoader": {
-                "split": "train",
                 "batch_size": 128,
                 "device": get_device().type,
+                "dataset_dir":  f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
                 "lr": 1e-3,
