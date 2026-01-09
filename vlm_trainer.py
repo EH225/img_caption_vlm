@@ -78,7 +78,7 @@ class Trainer:
             self.logger.addHandler(tqdm_handler)
 
         self.vlm = vlm  # The vision-language model
-        self.logger.info("Number of model parameters:", sum(p.numel() for p in vlm.parameters()))
+        self.logger.info(f"Number of model parameters: {sum(p.numel() for p in vlm.parameters())}")
         self.device = get_device()  # Auto-detect what device to use for training
         self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
         self.amp_dtype = get_amp_dtype(self.device.type) if use_amp else None
