@@ -170,17 +170,17 @@ def collate_fn(batch: List[Dict], pad_token_id: int) -> Dict:
     captions = pad_sequence(captions, batch_first=True, padding_value=pad_token_id)
     return {"images": images, "captions": captions}
 
-class CocoCaptionTensorDataset(Dataset):
+
+class CocoCaptionDataset(Dataset):
     """
-    Dataset object for COCO image captioning data that uses all tensors instead of reading from disk for
-    each batch which can take a long time on Google colab.
+    Dataset object for COOC image captioning data.
     """
 
-    def __init__(self, images_path: str, captions_path: str):
-        image_data = torch.load(images_path, map_location="cpu")
-        self.images = image_data["images"]       # [N, 3, 224, 224]
-        self.image_ids = image_data["image_ids"] # [N, ]
-        self.captions = torch.load(captions_path, map_location="cpu", weights_only=False)
+    def __init__(self, image_dir: str, caption_path: str, transform: transforms.Compose):
+        self.image_dir = image_dir  # The directory containing all of the images
+        self.captions = torch.load(caption_path, map_location="cpu", weights_only=False)
+        self.image_ids = list(self.captions.keys())  # The unique int image ids of all images
+        self.transform = transform  # Used to transform the images before they are returned in the batch
 
     def __len__(self):
         """
@@ -192,9 +192,15 @@ class CocoCaptionTensorDataset(Dataset):
         """
         Returns a dictionary containing keys "image" and "caption" for a particular index in the dataset.
         """
-        image = self.images[idx] # Extract the image data (3, 224, 224)
-        image_id = self.image_ids[idx] # Pull out the associated image ID to look up the associated captions
-        caption = random.choice(self.captions[image_id]) # Sample a random caption associated with this image
+        image_id = self.image_ids[idx]  # Get the image id associated with this int index
+        image_name = "0" * (12 - len(str(image_id))) + str(image_id)  # Convert to a str and pad with 0s
+
+        # Load the image from disk, images names have zero left padding e.g. 0000048
+        img_path = os.path.join(self.image_dir, f"{image_name}.jpg")
+        image = Image.open(img_path).convert("RGB")
+        image = self.transform(image)  # Convert to Tensor and normalize with the saved transforms
+        caption = random.choice(self.captions[image_id])  # Sample a random caption associated with this image
+
         # Return the data as a dict, torch.FloatTensor [3,224,224], torch.IntTensor(len(caption))
         return {"image": image, "caption": torch.tensor(caption, dtype=torch.long)}
 
@@ -207,20 +213,24 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = "c
     :param split: The data split e.g. "train" or "val".
     :param batch_size: The batch size for the data loader.
     :param device: A string denoting the device.
-    :param dataset_dir: Directory of the dataset to load data from.
     :returns: A DataLoader object with the dataset split specified loaded.
     """
-    dataset_dir = os.join.path(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
-    images_path = os.path.join(dataset_dir, f"{split}_images.pt")
-    captions_path = os.path.join(dataset_dir, f"{split}_captions.pt")
+    dataset_dir = CURRENT_DIR if dataset_dir is None else dataset_dir
+    image_dir = os.path.join(dataset_dir, f"images/{split}2017")
+    caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
+    image_transforms = transforms.Compose([
+        transforms.ToTensor(),  # PIL → FloatTensor [0,1]
+        transforms.Normalize(  # From ImageNet sample statistics, standard normalizations
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
 
     # Load the vocab model to get the padding token id, should be 0 but it is safer to check
     vocab_model_path = os.path.join(dataset_dir, "vocab.model")
     sp = spm.SentencePieceProcessor()
     sp.load(vocab_model_path)
-
-    dataset = CocoCaptionTensorDataset(images_path, captions_path)
-
+    dataset = CocoCaptionDataset(image_dir, caption_path, image_transforms)
     if device == "cuda":
         num_workers, pin_memory, persistent_workers = 4, True, True
     else:
@@ -251,9 +261,9 @@ if __name__ == "__main__":
 
     # 3). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
-    train_imgs_dir = os.path.join(dataset_dir, "coco_original/images/train2017/")
+    train_imgs_path = os.path.join(dataset_dir, "coco_original/images/train2017/")
     output_dir = os.path.join(dataset_dir, "preprocessed")
-    create_vocab(train_captions_path, train_imgs_dir, output_dir, vocab_size)
+    create_vocab(train_captions_path, train_imgs_path, output_dir, vocab_size)
 
     # 4). Preprocess the train image captions and tokenize them into integers ahead of time
     captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
