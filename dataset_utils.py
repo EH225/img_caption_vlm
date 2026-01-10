@@ -73,7 +73,7 @@ def preprocess_images(original_img_dir: str, output_image_dir: str, target_size:
         image = resize_with_padding(image)  # Resize and add padding
         # Save the processed image to the output directory
         image.save(os.path.join(output_image_dir, image_file))
-    print("Processing complete! Images saved to: {output_image_dir}")
+    print(f"Processing complete! Images saved to: {output_image_dir}")
 
 
 ##############################
@@ -262,19 +262,24 @@ if __name__ == "__main__":
     output_image_dir = os.path.join(dataset_dir, "preprocessed/images/val2017")
     preprocess_images(original_img_dir, output_image_dir, img_size)
 
-    # 3). Using all the training set captions, create a sub-word tokenizer
+    # 3). Pre-process the test images, down-size and pad to [224 x 224 x 3]
+    original_img_dir = os.path.join(dataset_dir, "coco_original/images/test2017")
+    output_image_dir = os.path.join(dataset_dir, "preprocessed/images/test2017")
+    preprocess_images(original_img_dir, output_image_dir, img_size)
+
+    # 4). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
     train_imgs_path = os.path.join(dataset_dir, "coco_original/images/train2017/")
     output_dir = os.path.join(dataset_dir, "preprocessed")
     create_vocab(train_captions_path, train_imgs_path, output_dir, vocab_size)
 
-    # 4). Preprocess the train image captions and tokenize them into integers ahead of time
+    # 5). Preprocess the train image captions and tokenize them into integers ahead of time
     captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
     vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
     output_path = os.path.join(dataset_dir, "preprocessed/captions/train_captions.pt")
     tokenize_captions(captions_path, vocab_model_path, output_path, max_tokens=max_tokens_per_caption)
 
-    # 5). Preprocess the validation image captions and tokenize them into integers ahead of time
+    # 6). Preprocess the validation image captions and tokenize them into integers ahead of time
     captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_val2017.json")
     vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
     output_path = os.path.join(dataset_dir, "preprocessed/captions/val_captions.pt")

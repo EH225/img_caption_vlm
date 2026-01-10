@@ -566,7 +566,7 @@ class VisionLanguageTransformer(nn.Module):
         # A final projection layer from the outputs of the decoder to the vocab space
         self.vocab_proj = nn.Linear(embed_dim, self.vocab_size)
 
-        self.register_buffer('device_param', torch.empty(0)) # A dummy param to tracking the device of this
+        self.register_buffer('device_param', torch.empty(0))  # A dummy param to tracking the device of this
         # model during later calls
 
         # 3). Initialize the weights of the network randomly
@@ -686,7 +686,7 @@ class VisionLanguageTransformer(nn.Module):
         # Compute to a prob distribution over the vocabulary for each prediction timestep from the decoder,
         # decoder_outputs is what would be used at each timestep, we can process them all at once since we
         # have them all here at once as one big tensor of size (N, T, V)
-        log_prob = F.log_softmax(decoder_outputs, dim=-1) # Softmax along the last dim, then take the log
+        log_prob = F.log_softmax(decoder_outputs, dim=-1)  # Softmax along the last dim, then take the log
 
         # Zero out, probabilities for which we have nothing in the target text i.e. the padding, create a bool
         # mask of 0s and 1s by checking that each entry is not equal to the <pad> token, 0s == padding token
@@ -715,7 +715,7 @@ class VisionLanguageTransformer(nn.Module):
         # Zero out the y_hat values for the padding tokens so that they don't contribute to the sum
         target_words_log_prob = target_words_log_prob * target_masks[:, 1:]  # (b, tgt_len - 1)
 
-        # Return the avg negative log-likelihoods across all target tokens, across all captins
+        # Return the avg negative log-likelihoods across all target tokens, across all captions
         loss = -target_words_log_prob.sum() / target_masks[:, 1:].sum()  # Compute 1 torch.float loss value
         return loss
 
@@ -758,8 +758,8 @@ class VisionLanguageTransformer(nn.Module):
 
                 # Update the captions output and the current partial captions tensor
                 captions[:, t] = word_indices.cpu().numpy()
-                captions[eos_mask, t] = self._pad # Replace with the padding token beyond </s>
-                eos_mask = eos_mask & (captions[:, t] == self._end) # Update the end of sentence bool flags
+                captions[eos_mask, t] = self._pad  # Replace with the padding token beyond </s>
+                eos_mask = eos_mask & (captions[:, t] == self._end)  # Update the end of sentence bool flags
                 if eos_mask.sum() == len(eos_mask):  # Stop early if all outputs have reached their </s> token
                     break
 

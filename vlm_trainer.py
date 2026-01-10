@@ -7,14 +7,17 @@ from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption
 import logging
 import psutil
+import pandas as pd
 from pathlib import Path
 from torch.utils.data import DataLoader
 from torch_models import VisionLanguageTransformer
+
 
 def infinite_loader(dl):
     while True:
         for batch in dl:
             yield batch
+
 
 class TqdmLoggingHandler(logging.Handler):
     def emit(self, record):
@@ -57,6 +60,9 @@ class Trainer:
 
         self.checkpoints_folder = os.path.join(self.results_folder, "checkpoints/")
         os.makedirs(self.checkpoints_folder, exist_ok=True)  # Create the directory if not already there
+
+        self.losses_folder = os.path.join(self.results_folder, "losses/")
+        os.makedirs(self.losses_folder, exist_ok=True)  # Create the directory if not already there
 
         # Set up logging during training
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -115,11 +121,11 @@ class Trainer:
         checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
         self.logger.info(f"Saving model to {checkpoint_path}.")
         data = {"step": self.step,
-                "all_losses": self.all_losses, # This saves only the losses computed between save() calls
                 "model": self.vlm.state_dict(),
                 "opt": self.opt.state_dict(),
                 }
         torch.save(data, checkpoint_path)
+        pd.Series(self.all_losses).to_csv(os.path.join(self.losses_folder, f"losses-{milestone}.csv"))
 
     def load(self, milestone: int) -> None:
         """
@@ -161,8 +167,8 @@ class Trainer:
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
 
-        inf_dataloader_train = infinite_loader(self.dataloader_train) # This does not cache batches
-        inf_dataloader_val = infinite_loader(self.dataloader_val) # This does not cache batches
+        inf_dataloader_train = infinite_loader(self.dataloader_train)  # This does not cache batches
+        inf_dataloader_val = infinite_loader(self.dataloader_val)  # This does not cache batches
 
         if self.amp_dtype is not None:
             if self.device.type != 'cuda':
@@ -179,7 +185,7 @@ class Trainer:
                 images = batch["images"].to(self.device, non_blocking=True)
                 captions = batch["captions"].to(self.device, non_blocking=True)
 
-                self.opt.zero_grad(set_to_none=True)  # Zero the gradients of the optimizer before computing the loss
+                self.opt.zero_grad(set_to_none=True)  # Zero the grads of the opt before computing the loss
                 # Compute the forward-pass through the model and compute a tensor that is the same shape
                 # along the first 2 dims as captions but also gives the prob dist across the vocab
                 if self.amp_dtype is not None:
@@ -206,7 +212,7 @@ class Trainer:
                 pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}",
                                  grad=f"{grad_norm:.3f}", logit_std=f"{outputs.std(dim=-1).mean():.3f}")
 
-                if self.step % 500 == 0: # Periodically log the loss and other training metrics
+                if self.step % 500 == 0:  # Periodically log the loss and other training metrics
                     self.logger.info((f"loss={loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
                                       f"grad={grad_norm:.3f}, logit_std={outputs.std(dim=-1).mean():.3f}"))
                     gpu_mem_used = torch.cuda.memory_allocated() / 1e9
@@ -219,11 +225,15 @@ class Trainer:
 
                 self.step += 1
 
-                if self.step % self.save_every == 0:  # Periodically save the model weights to disk
+                # Periodically save the model weights to disk
+                if self.step % self.save_every == 0 or self.step == self.train_num_steps - 1:
                     self.save(self.step)
+                    self.all_losses = []  # Clear the list of losses after each save, store only the ones
+                    # from the last save to the next save
                     torch.cuda.empty_cache()
 
-                if self.step % self.sample_every == 0:  # Periodically generate samples from the model
+                # Periodically generate samples from the model
+                if self.step % self.sample_every == 0 or self.step == self.train_num_steps - 1:
                     self.logger.info("\n")
                     self.logger.info(f"Generating samples at step={self.step}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
@@ -241,8 +251,5 @@ class Trainer:
                     self.vlm.train()  # Switch back to training mode once finished
 
                 del outputs, loss, images, captions
-
-                # if self.step % 50 == 0: # For debugging GPU RAM usage during training
-                #     print(torch.cuda.memory_allocated() / 1e9, "GB")
 
                 pbar.update(1)

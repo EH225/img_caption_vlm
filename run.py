@@ -48,7 +48,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     debug = args.debug.lower() == "true"
 
-    if debug: # Set up a debug config file to test the training pipeline locally
+    if debug:  # Set up a debug config file to test the training pipeline locally
         config = {
             "VisionLanguageTransformer": {
                 "img_size": 224,
@@ -63,7 +63,7 @@ if __name__ == "__main__":
             "DataLoader": {
                 "batch_size": 32,
                 "device": get_device().type,
-                "dataset_dir":  f"{CURRENT_DIR}/dataset/preprocessed/",
+                "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
                 "lr": 1e-3,
@@ -92,7 +92,7 @@ if __name__ == "__main__":
             "DataLoader": {
                 "batch_size": 128,
                 "device": get_device().type,
-                "dataset_dir":  f"{CURRENT_DIR}/dataset/preprocessed/",
+                "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
                 "lr": 1e-3,
