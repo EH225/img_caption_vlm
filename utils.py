@@ -9,6 +9,8 @@ from typing import List, Union
 def get_device():
     """
     Auto-detects what hardware is available and returns the appropriate device.
+
+    :returns: A torch device denoting what device is available.
     """
     if torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
@@ -22,6 +24,9 @@ def get_device():
 def get_amp_dtype(device: str = "cuda"):
     """
     Determines the Automatic Mixed Precision data type that can be used on the current hardware.
+
+    :param device: The device currently available as a string e.g. "cpu" or "cuda".
+    :returns: A torch float type for auto mixed precision training.
     """
     assert isinstance(device, str), "device must be a str"
     if device != "cuda" or not torch.cuda.is_available():
@@ -40,6 +45,10 @@ def decode_caption(word_ids: Union[np.ndarray, List[int]], sp_model) -> str:
     """
     Converts a list or np.ndarray of sub-word token ids to an output string sentences. Removes the special
     start <s>, end </s>, and <pad> padding tokens.
+
+    :param word_ids: A numpy array of integers or a list of integers that correspond to sub-piece tokens.
+    :param sp_model: A sub-piece token model for converting token indices to strings.
+    :returns: A string that is the decoded word sequence represented by the word tokens.
     """
     word_ids = word_ids.tolist() if hasattr(word_ids, "tolist") else word_ids  # Also accept an np.ndarray
 

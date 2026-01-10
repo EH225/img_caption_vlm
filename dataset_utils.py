@@ -1,3 +1,7 @@
+"""
+This module contains functions for pre-processing the images and captions of the dataset and helpful functions
+for constructing and loading a dataloader object to access the pre-processed data.
+"""
 import sys, os
 
 CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -26,12 +30,12 @@ def resize_with_padding(img: Image, target_size: int = 224,
                         padding_pixels: Tuple[int] = (128, 128, 128)) -> Image:
     """
     Takes an input PIL.image and applies resizing & padding to it. Images are first re-sized along the
-    largest dimension to target_size and then padding is added to the shorter dimension to get an overall
-    square shape of [target_size x target_size]. padding_pixels determines the color of the pixels added
-    for padding.
+    largest dimension to target_size and then padding is added to the shorter size to get an overall
+    square shape of [target_size x target_size x 3]. padding_pixels determines the color of the pixels added
+    for padding, the default is a light gray (128, 128, 128).
 
     :param img: An input PIL.image object to be processed.
-    :param target_size: The desired size, height and width.
+    :param target_size: The desired size, height and width, images are resized to be square.
     :param padding_pixels: The color of the padding pixels to be added.
     :returns: A processed image that has been resized and padded to be square.
     """
@@ -52,8 +56,8 @@ def resize_with_padding(img: Image, target_size: int = 224,
 
 def preprocess_images(original_img_dir: str, output_image_dir: str, target_size: int = 224) -> None:
     """
-    This function will apply pre-processing to all images (ending in .jpg) found in original_img_dir and
-    save the output to output_image_dir. Each image will be re-sized to be square with target_size pixels
+    This function applies pre-processing to all images (ending in .jpg) found in original_img_dir and
+    saves the output to output_image_dir. Each image will be re-sized to be square with target_size pixels
     along each side with padding added to fill in the rest.
 
     :param original_img_dir: A folder path to a directory containing images to be processed.
@@ -80,13 +84,12 @@ def preprocess_images(original_img_dir: str, output_image_dir: str, target_size:
 ### Caption Pre-Processing ###
 ##############################
 
-def create_vocab(train_captions_path: str, train_imgs_path: str, output_dir: str,
-                 vocab_size: int = 10000) -> None:
+def create_vocab(train_captions_path: str, output_dir: str, vocab_size: int = 10000) -> None:
     """
     Creates a vocab.model and vocab.vocab file by training a sub-piece sentence tokenizer on the corpus of
     training captions with a given vocab size limit.
 
-    :param train_captions_path: The file path of where the training captions set is located.
+    :param train_captions_path: The file path of where the training set captions are located.
     :param output_dir: A directory to save the trained vocab model out to.
     :param vocab_size: The desired number of unique sub-word tokens in the vocab.
     :returns: None. Saves the trained model to disk.
@@ -121,12 +124,13 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
     """
     This function reads in all the captions saved to a particular captions_path and tokenizes them using a
     saved sentence piece tokenizer trained and saved to disk. This method saves the results as a .pt file
-    in output_path. max_tokens determines the max number of tokens allowed per caption.
+    in output_path. max_tokens determines the max number of tokens allowed per caption, which includes the
+    special start <s> and end <s/> tokens.
 
     :param captions_path: A file path pointing to the captions .json file to process.
-    :param vocab_model_path: A file path pointing to a save sp model.
+    :param vocab_model_path: A file path pointing to a saved sp model.
     :param output_path: A directory to save the tokenized captions to (a list of lists of ints).
-    :param max_tokens: The max number of tokens allowed per caption.
+    :param max_tokens: The max number of tokens allowed per caption including the start and end tokens.
     :returns: None. Saves the results to disk.
     """
     # 1). Read in the caption data to be tokenized
@@ -139,19 +143,17 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
     sp = spm.SentencePieceProcessor()
     sp.load(vocab_model_path)
 
-    # 3). Tokenize all the captions and aggregate them into a np.array for each image in the dataset
+    # 3). Tokenize all the captions and aggregate them as a list of lists of ints for each img in the dataset
     output_dict = {}
     for d in caption_dicts:  # Tokenize each of the captions into integers, truncate, and pad if needed
         tokens = [[sp.bos_id()] + sp.encode(x["caption"], out_type=int)[:(max_tokens - 2)] + [sp.eos_id()]
                   for x in d]  # Add <s> and </s> tokens to either size, cap at max_tokens in total
-        # tokens = [x + [sp.pad_id()] * ((max_tokens - 1) - len(x)) for x in tokens] # Pad the rest
         # Record image_id: List[List[int]] to associate the caption token sequences with each image
         output_dict[d[0]["image_id"]] = tokens
 
-    # 4). Save the results to disk to complete the pre-processing
+    # 4). Save the results to disk to complete the captions pre-processing
     os.makedirs(os.path.dirname(output_path), exist_ok=True)  # Make this directory if it doesn't yet exist
     torch.save(output_dict, output_path)
-    # np.savez_compressed(output_path, **{str(k): v for k, v in output_dict.items()})
 
 
 ####################
@@ -160,22 +162,26 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
 
 def collate_fn(batch: List[Dict], pad_token_id: int) -> Dict:
     """
-    This function is used aggregate multiple entries from the dataset into a batch by collating the caption
+    This function is used to aggregate multiple entries from the dataset into a batch by collating the caption
     token list of lists into a padded torch.Tensor so that they're all the same length, i.e. the longest
     caption in the batch.
 
     :param batch: A batch as a list of dictionaries.
+    :param pad_token_id: An integer denoting the index of the padding token.
+    :returns: A dictionary with keys "images": torch.Tensor (N, C, H, W) and "captions": torch.Tensor (N, T).
     """
-    images = torch.stack([b["image"] for b in batch])
-    captions = [b["caption"] for b in batch]
+    images = torch.stack([b["image"] for b in batch])  # Concatenate into 1 large tensor of size (N, C, H, W)
+    captions = [b["caption"] for b in batch]  # Collect caption tensors into a list
+    # Combine them into 1 large tensor of size (N, T) where T = longest caption token seq length, add padding
+    # to the others where needed to make them all of length T
     captions = pad_sequence(captions, batch_first=True, padding_value=pad_token_id)
-    image_names = [b["image_name"] for b in batch]
+    image_names = [b["image_name"] for b in batch]  # Create a list of image names e.g. ["000000001234", ...]
     return {"images": images, "captions": captions, "image_names": image_names}
 
 
 class CocoCaptionDataset(Dataset):
     """
-    Dataset object for COOC image captioning data.
+    Dataset object for COCO image captioning data.
     """
 
     def __init__(self, image_dir: str, caption_path: str, transform: transforms.Compose):
@@ -185,14 +191,15 @@ class CocoCaptionDataset(Dataset):
         :param image_dir: A directory where the pre-processed images are saved.
         :param caption_path: A path to where the pre-processed {split}_captions.pt file is saved. If set to
             None, then no captions data will be loaded e.g. for the test set where no caption data is
-            provided in the COCO dataset.
+            provided in the COCO dataset. The captions in each batch will be a tensor of all zeros of size
+            (N, 1).
         :param transform: A composition of torch vision transforms to apply to each image before being added
             to a batch.
         """
-        self.image_dir = image_dir  # The directory containing all of the images
-        if caption_path is not None:
+        self.image_dir = image_dir  # The directory containing all the images
+        if caption_path is not None:  # Load in the captions data if available
             self.captions = torch.load(caption_path, map_location="cpu", weights_only=False)
-        else:
+        else:  # Otherwise no captions data will be provided in the batches
             self.captions = None
         self.image_ids = [int(x.replace(".jpg", ""))
                           for x in os.listdir(self.image_dir) if x.endswith(".jpg")]
@@ -200,7 +207,7 @@ class CocoCaptionDataset(Dataset):
 
     def __len__(self):
         """
-        Returns the total number of images in the dataset.
+        Returns the total number of image-caption pairs in the dataset.
         """
         return len(self.image_ids)
 
@@ -211,13 +218,14 @@ class CocoCaptionDataset(Dataset):
         image_id = self.image_ids[idx]  # Get the image id associated with this int index
         image_name = "0" * (12 - len(str(image_id))) + str(image_id)  # Convert to a str and pad with 0s
 
-        # Load the image from disk, images names have zero left padding e.g. 0000048
+        # Load the image from disk, images names have 0s left padding e.g. 000000001234, the total length
+        # is 12 for all image names
         img_path = os.path.join(self.image_dir, f"{image_name}.jpg")
         image = Image.open(img_path).convert("RGB")
         image = self.transform(image)  # Convert to Tensor and normalize with the saved transforms
         if self.captions is None:  # If no captions in this data loader, still return a 0 for each
             caption = torch.zeros(1)
-        else: # Sample a random caption associated with this image and return it as a torch tensor
+        else:  # Sample a random caption associated with this image and return it as a torch tensor
             caption = torch.tensor(random.choice(self.captions[image_id]), dtype=torch.long)
 
         # Return the data as a dict, torch.FloatTensor [3,224,224], torch.IntTensor(len(caption))
@@ -229,15 +237,15 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     """
     This method returns a DataLoader object by loading in the pre-processed dataset from disk.
 
-    :param split: The data split e.g. "train" or "val".
+    :param split: The data split e.g. "train", "val", or "test.
     :param batch_size: The batch size for the data loader.
     :param device: A string denoting the device.
     :param include_captions: If True, then the dataloader is constructed with captions.
     :param dataset_dir: A directory where the data set is saved. If not provided, it is assumed to be
-        dataset/preprocessed/ relative to this file's location/
+        'dataset/preprocessed/' relative to this file's location.
     :returns: A DataLoader object with the dataset split specified loaded.
     """
-    device = device if device is not None else get_device()
+    device = device if device is not None else get_device()  # Auto-detect the available hardware
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
     image_dir = os.path.join(dataset_dir, f"images/{split}2017")
     caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
@@ -266,7 +274,7 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
 
 
 if __name__ == "__main__":
-    # The steps below run a full data-set preprocessing pipeline of steps
+    # 0).  The steps below run a full data-set preprocessing pipeline of steps
     img_size = 224  # Process all the images to be a set size with H==W
     vocab_size = 10000  # How many sub-word tokens we will create in our vocab
     max_tokens_per_caption = 100  # Limit how many total tokens we can have for each caption, this includes
@@ -281,9 +289,8 @@ if __name__ == "__main__":
 
     # 2). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
-    train_imgs_path = os.path.join(dataset_dir, "coco_original/images/train2017/")
     output_dir = os.path.join(dataset_dir, "preprocessed")
-    create_vocab(train_captions_path, train_imgs_path, output_dir, vocab_size)
+    create_vocab(train_captions_path, output_dir, vocab_size)
 
     # 3). Preprocess the train and validation image captions and tokenize them into integers ahead of time
     # There are no captions provided for the test set image

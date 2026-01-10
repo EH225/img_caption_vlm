@@ -1,3 +1,6 @@
+"""
+This module contains a Trainer class that is used to perform model training for a VLM.
+"""
 import os
 import numpy as np
 import torch
@@ -12,9 +15,12 @@ from torch.utils.data import DataLoader
 from torch_models import VisionLanguageTransformer
 
 
-def infinite_loader(dl):
+def infinite_loader(dataloader: DataLoader):
+    """
+    Infinitely yields batches of data from the input dataloader (dl) without caching batches.
+    """
     while True:
-        for batch in dl:
+        for batch in dataloader:
             yield batch
 
 
@@ -31,7 +37,7 @@ class Trainer:
                  grad_clip: float = 1.0, sample_every: int = 500, save_every: int = 5000,
                  results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: bool = True):
         """
-        A frame work for training a Vision-Language Model (VLT). This class wrapper has methods for loading
+        A framework for training a Vision-Language Model (VLT). This class wrapper has methods for loading
         a model from a recent checkpoint, saving a model periodically during training, and running a training
         loop to train from scratch or to continue from the last checkpoint.
 
@@ -44,8 +50,8 @@ class Trainer:
         :param adam_betas: Beta parameters for the adam optimizer.
         :param grad_clip: The amount of gradient clipping to use during training.
         :param sample_every: An int denoting how often to sample and save outputs from the model.
-        :param save_every: An int denoting how often to save the model weights.
-        :param results_folder: A location to save the result of the training.
+        :param save_every: An int denoting how often to save the model weights and losses.
+        :param results_folder: A location to save the results of training.
         :param use_amp: Whether to use automatic mixed-precision type casting during training.
         :param use_latest_checkpoint: If set to True, then the latest checkpoint detected in the results
             directory will be loaded in before training begins to pick up from where it was last left off.
@@ -55,13 +61,10 @@ class Trainer:
         assert results_folder is not None, "You must specify results folder to save the outputs"
 
         self.results_folder = results_folder  # A directory where the checkpoints will be saved
-        os.makedirs(self.results_folder, exist_ok=True)  # Create the directory if not already there
-
         self.checkpoints_folder = os.path.join(self.results_folder, "checkpoints/")
-        os.makedirs(self.checkpoints_folder, exist_ok=True)  # Create the directory if not already there
-
         self.losses_folder = os.path.join(self.results_folder, "losses/")
-        os.makedirs(self.losses_folder, exist_ok=True)  # Create the directory if not already there
+        for directory in [self.results_folder, self.checkpoints_folder, self.losses_folder]:
+            os.makedirs(directory, exist_ok=True)  # Create the directory if not already there
 
         # Set up logging during training
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -94,7 +97,7 @@ class Trainer:
         self.sample_every = sample_every  # How often to generate samples
         self.train_num_steps = train_num_steps  # The total number of training steps
 
-        # Set the dataset and dataloader
+        # Save a pointer to the train and validation dataloaders
         self.dataloader_train = dataloader_train
         self.dataloader_val = dataloader_val
 
@@ -115,7 +118,7 @@ class Trainer:
         Saves the weights of the model for the current milestone.
 
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
-        :returns: None.
+        :returns: None. Writes the weights and losses to disk.
         """
         checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
         self.logger.info(f"Saving model to {checkpoint_path}.")
@@ -124,6 +127,7 @@ class Trainer:
                 "opt": self.opt.state_dict(),
                 }
         torch.save(data, checkpoint_path)
+        # Save down all the loss values produced by model training since the last caching
         pd.Series(self.all_losses).to_csv(os.path.join(self.losses_folder, f"losses-{milestone}.csv"))
 
     def load(self, milestone: int) -> None:
@@ -131,20 +135,19 @@ class Trainer:
         Loads in the cached weights from disk for a particular milestone.
 
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
-        :returns: None.
+        :returns: None. Weights are loaded into the vlm model.
         """
         checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
         self.logger.info(f"Loading model from {checkpoint_path}.")
         checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
 
-        # Re-instate the training step counter, loss values, model weights and optimizer state from the
-        # checkpoint data read in from disk
+        # Re-instate the training step counter, model weights, and optimizer state from the checkpoint data
+        # read in from disk
         self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model"])
         self.opt.load_state_dict(checkpoint_data["opt"])
-        # We don't load the all_losses part of the saved model state, we will begin a new all_losses list
-        # and save whatever is generated with the next checkpoint so that each checkpoint only contains the
-        # losses since the prior checkpoint save
+        # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
+        # needed to continue training. The losses obtained by training will be cached again at the next save
 
         # Move the model and the optimizer to the same device to continue training or for inference
         for state in self.opt.state.values():

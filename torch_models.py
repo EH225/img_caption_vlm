@@ -477,7 +477,7 @@ class TransformerDecoder(nn.Module):
 
 
 ###############################################
-### Vision-Language Transformer (ViT) Model ###
+### Vision-Language Transformer (VLM) Model ###
 ###############################################
 # TODO: Section marker
 
@@ -750,8 +750,8 @@ class VisionLanguageTransformer(nn.Module):
                 # Predict the next token index for all images in the input batch
                 # TODO: could be made more efficient by using a key-value cache during decoding
                 output_logits = self.decode(img_features, partial_captions)
-                output_logits = output_logits[:, -1, :]  # Use only last timestep's embedding values to make
-                # the next token prediction
+                output_logits = output_logits[:, -1, :]  # Use only the last timestep's embedding values to
+                # make the next token prediction
 
                 # Choose the most likely word index from the vocabulary for each image, (N, V) -> (N, )
                 word_indices = torch.argmax(output_logits, axis=1)  # (N, )
