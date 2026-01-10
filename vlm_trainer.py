@@ -1,4 +1,4 @@
-import os, itertools, sys
+import os
 import numpy as np
 import torch
 from tqdm.auto import tqdm
@@ -8,7 +8,6 @@ from utils import get_device, get_amp_dtype, decode_caption
 import logging
 import psutil
 import pandas as pd
-from pathlib import Path
 from torch.utils.data import DataLoader
 from torch_models import VisionLanguageTransformer
 
@@ -28,8 +27,8 @@ class TqdmLoggingHandler(logging.Handler):
 class Trainer:
     def __init__(self, vlm: VisionLanguageTransformer, dataloader_train: DataLoader,
                  dataloader_val: DataLoader, lr: float = 1e-3, weight_decay: float = 1e-3,
-                 train_num_steps: int = 100000, adam_betas: Tuple[float] = (0.9, 0.99),
-                 grad_clip: float = 1.0, sample_every: int = 1000, save_every: int = 5000,
+                 train_num_steps: int = 300000, adam_betas: Tuple[float] = (0.9, 0.99),
+                 grad_clip: float = 1.0, sample_every: int = 500, save_every: int = 5000,
                  results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: bool = True):
         """
         A frame work for training a Vision-Language Model (VLT). This class wrapper has methods for loading
@@ -226,14 +225,14 @@ class Trainer:
                 self.step += 1
 
                 # Periodically save the model weights to disk
-                if self.step % self.save_every == 0 or self.step == self.train_num_steps - 1:
+                if self.step % self.save_every == 0 or self.step == self.train_num_steps:
                     self.save(self.step)
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
                     torch.cuda.empty_cache()
 
                 # Periodically generate samples from the model
-                if self.step % self.sample_every == 0 or self.step == self.train_num_steps - 1:
+                if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
                     self.logger.info("\n")
                     self.logger.info(f"Generating samples at step={self.step}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set

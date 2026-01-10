@@ -179,9 +179,23 @@ class CocoCaptionDataset(Dataset):
     """
 
     def __init__(self, image_dir: str, caption_path: str, transform: transforms.Compose):
+        """
+        Initializes a dataset object for the COCO image-caption data.
+
+        :param image_dir: A directory where the pre-processed images are saved.
+        :param caption_path: A path to where the pre-processed {split}_captions.pt file is saved. If set to
+            None, then no captions data will be loaded e.g. for the test set where no caption data is
+            provided in the COCO dataset.
+        :param transform: A composition of torch vision transforms to apply to each image before being added
+            to a batch.
+        """
         self.image_dir = image_dir  # The directory containing all of the images
-        self.captions = torch.load(caption_path, map_location="cpu", weights_only=False)
-        self.image_ids = list(self.captions.keys())  # The unique int image ids of all images
+        if caption_path is not None:
+            self.captions = torch.load(caption_path, map_location="cpu", weights_only=False)
+        else:
+            self.captions = None
+        self.image_ids = [int(x.replace(".jpg", ""))
+                          for x in os.listdir(self.image_dir) if x.endswith(".jpg")]
         self.transform = transform  # Used to transform the images before they are returned in the batch
 
     def __len__(self):
@@ -201,26 +215,33 @@ class CocoCaptionDataset(Dataset):
         img_path = os.path.join(self.image_dir, f"{image_name}.jpg")
         image = Image.open(img_path).convert("RGB")
         image = self.transform(image)  # Convert to Tensor and normalize with the saved transforms
-        caption = random.choice(self.captions[image_id])  # Sample a random caption associated with this image
+        if self.captions is None:  # If no captions in this data loader, still return a 0 for each
+            caption = torch.zeros(1)
+        else: # Sample a random caption associated with this image and return it as a torch tensor
+            caption = torch.tensor(random.choice(self.captions[image_id]), dtype=torch.long)
 
         # Return the data as a dict, torch.FloatTensor [3,224,224], torch.IntTensor(len(caption))
-        return {"image": image, "caption": torch.tensor(caption, dtype=torch.long), "image_name": image_name}
+        return {"image": image, "caption": caption, "image_name": image_name}
 
 
 def get_dataloader(split: str = "train", batch_size: int = 128, device: str = None,
-                   dataset_dir: str = None) -> DataLoader:
+                   include_captions: bool = True, dataset_dir: str = None) -> DataLoader:
     """
     This method returns a DataLoader object by loading in the pre-processed dataset from disk.
 
     :param split: The data split e.g. "train" or "val".
     :param batch_size: The batch size for the data loader.
     :param device: A string denoting the device.
+    :param include_captions: If True, then the dataloader is constructed with captions.
+    :param dataset_dir: A directory where the data set is saved. If not provided, it is assumed to be
+        dataset/preprocessed/ relative to this file's location/
     :returns: A DataLoader object with the dataset split specified loaded.
     """
     device = device if device is not None else get_device()
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
     image_dir = os.path.join(dataset_dir, f"images/{split}2017")
     caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
+    caption_path = caption_path if include_captions else None
     image_transforms = transforms.Compose([
         transforms.ToTensor(),  # PIL → FloatTensor [0,1]
         transforms.Normalize(  # From ImageNet sample statistics, standard normalizations
@@ -252,35 +273,22 @@ if __name__ == "__main__":
     # the special start and end tokens appended to the front and back
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/")
 
-    # 1). Pre-process the training images, down-size and pad to [224 x 224 x 3]
-    original_img_dir = os.path.join(dataset_dir, "coco_original/images/train2017")
-    output_image_dir = os.path.join(dataset_dir, "preprocessed/images/train2017")
-    preprocess_images(original_img_dir, output_image_dir, img_size)
+    # 1). Pre-process the training, validation, and test images, down-size and pad to [224 x 224 x 3]
+    for split in ["train", "val", "test"]:
+        original_img_dir = os.path.join(dataset_dir, f"coco_original/images/{split}2017")
+        output_image_dir = os.path.join(dataset_dir, f"preprocessed/images/{split}2017")
+        preprocess_images(original_img_dir, output_image_dir, img_size)
 
-    # 2). Pre-process the validation images, down-size and pad to [224 x 224 x 3]
-    original_img_dir = os.path.join(dataset_dir, "coco_original/images/val2017")
-    output_image_dir = os.path.join(dataset_dir, "preprocessed/images/val2017")
-    preprocess_images(original_img_dir, output_image_dir, img_size)
-
-    # 3). Pre-process the test images, down-size and pad to [224 x 224 x 3]
-    original_img_dir = os.path.join(dataset_dir, "coco_original/images/test2017")
-    output_image_dir = os.path.join(dataset_dir, "preprocessed/images/test2017")
-    preprocess_images(original_img_dir, output_image_dir, img_size)
-
-    # 4). Using all the training set captions, create a sub-word tokenizer
+    # 2). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
     train_imgs_path = os.path.join(dataset_dir, "coco_original/images/train2017/")
     output_dir = os.path.join(dataset_dir, "preprocessed")
     create_vocab(train_captions_path, train_imgs_path, output_dir, vocab_size)
 
-    # 5). Preprocess the train image captions and tokenize them into integers ahead of time
-    captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
-    vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
-    output_path = os.path.join(dataset_dir, "preprocessed/captions/train_captions.pt")
-    tokenize_captions(captions_path, vocab_model_path, output_path, max_tokens=max_tokens_per_caption)
-
-    # 6). Preprocess the validation image captions and tokenize them into integers ahead of time
-    captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_val2017.json")
-    vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
-    output_path = os.path.join(dataset_dir, "preprocessed/captions/val_captions.pt")
-    tokenize_captions(captions_path, vocab_model_path, output_path, max_tokens=max_tokens_per_caption)
+    # 3). Preprocess the train and validation image captions and tokenize them into integers ahead of time
+    # There are no captions provided for the test set image
+    for split in ["train", "val"]:
+        captions_path = os.path.join(dataset_dir, f"coco_original/annotations/captions_{split}2017.json")
+        vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
+        output_path = os.path.join(dataset_dir, f"preprocessed/captions/{split}_captions.pt")
+        tokenize_captions(captions_path, vocab_model_path, output_path, max_tokens=max_tokens_per_caption)

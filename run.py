@@ -35,7 +35,7 @@ def train_model(config: Dict) -> None:
     dataloader_train = get_dataloader(split='train', **config.get("DataLoader", {}))
     dataloader_val = get_dataloader(split='val', **config.get("DataLoader", {}))
 
-    # 4). Configure the training pipeline
+    # 4). Configure the training pipeline with the trainer object
     trainer = Trainer(vlm, dataloader_train, dataloader_val, **config.get("Trainer", {}))
 
     # 5). Train the model to completion
@@ -66,15 +66,15 @@ if __name__ == "__main__":
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
-                "lr": 1e-3,
+                "lr": 5e-4,
                 "weight_decay": 1e-3,
-                "train_num_steps": 100000,
+                "train_num_steps": 300000,
                 "grad_clip": 1.0,
-                "sample_every": 5,
-                "save_every": 10,
-                "results_folder": f"{CURRENT_DIR}/results/debug",
+                "sample_every": 500,
+                "save_every": 5000,
+                "results_folder": f"{CURRENT_DIR}/results",
                 "use_amp": True,
-                "use_latest_checkpoint": False,
+                "use_latest_checkpoint": True,
             }
         }
     else:  # Set up a config for prod training, set parameters for each component
@@ -90,16 +90,16 @@ if __name__ == "__main__":
                 "dropout": 0.1,
             },
             "DataLoader": {
-                "batch_size": 128,
+                "batch_size": 512,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
-                "lr": 1e-3,
+                "lr": 5e-4,
                 "weight_decay": 1e-3,
-                "train_num_steps": 100000,
+                "train_num_steps": 300000,
                 "grad_clip": 1.0,
-                "sample_every": 1000,
+                "sample_every": 500,
                 "save_every": 5000,
                 "results_folder": f"{CURRENT_DIR}/results",
                 "use_amp": True,
