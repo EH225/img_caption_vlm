@@ -7,4 +7,4 @@ This repository contains code for the Vision-Language Transformer Model for Imag
 - `run.py`: This module is used for putting together all the components mentioned above to run model training. n.py`.
 - `env_req`: This folder contains `environment.yml` which outlines the virtural environment configuration used to develop and run this project.
 
-This project was based on the repo provided by assignment 3 of Stanford University's Deep Learning for Computer Vision (XCS231N) course, with many modifications.[README.md](..%2Fddpm%2FREADME.md)[README.md](..%2Fddpm%2FREADME.md)[README.md](..%2Fddpm%2FREADME.md)
+This project was partially based on the repo provided by assignment 3 of Stanford University's Deep Learning for Computer Vision ([XCS231N](https://cs231n.stanford.edu/)) course, with many modifications.
