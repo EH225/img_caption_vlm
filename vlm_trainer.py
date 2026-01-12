@@ -174,6 +174,10 @@ class Trainer:
         :returns: None. Caches the results to disk.
         """
         self.logger.info(f"Starting Training, device={self.device}, amp_dtype={self.amp_dtype}")
+        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and weight decay
+            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
+            break # Show for only the first parameter group, assume all are the same
+
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
 
