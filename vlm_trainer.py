@@ -102,6 +102,9 @@ class Trainer:
         self.dataloader_val = dataloader_val
 
         # Configure the optimizer for training
+        self.lr = lr
+        self.adam_betas = adam_betas
+        self.weight_decay = weight_decay
         self.opt = AdamW(self.vlm.parameters(), lr=lr, betas=adam_betas, weight_decay=weight_decay)
 
         self.step = 0  # Training step counter
@@ -146,6 +149,11 @@ class Trainer:
         self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model"])
         self.opt.load_state_dict(checkpoint_data["opt"])
+        for param_group in self.opt.param_groups:
+            param_group["lr"] = self.lr
+            param_group["betas"] = self.adam_betas
+            param_group["weight_decay"] = self.weight_decay
+
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
