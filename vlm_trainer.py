@@ -13,6 +13,7 @@ import psutil
 import pandas as pd
 from torch.utils.data import DataLoader
 from torch_models import VisionLanguageTransformer
+from torch.optim.lr_scheduler import SequentialLR, LinearLR
 
 
 def infinite_loader(dataloader: DataLoader):
@@ -32,10 +33,11 @@ class TqdmLoggingHandler(logging.Handler):
 
 class Trainer:
     def __init__(self, vlm: VisionLanguageTransformer, dataloader_train: DataLoader,
-                 dataloader_val: DataLoader, lr: float = 1e-3, weight_decay: float = 1e-3,
-                 train_num_steps: int = 300000, adam_betas: Tuple[float] = (0.9, 0.99),
-                 grad_clip: float = 1.0, sample_every: int = 500, save_every: int = 5000,
-                 results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: bool = True):
+                 dataloader_val: DataLoader, lr_start: float = 1e-4, lr_end: float = 1e-5,
+                 weight_decay: float = 1e-3, train_num_steps: int = 300000,
+                 adam_betas: Tuple[float] = (0.9, 0.99), grad_clip: float = 1.0,
+                 sample_every: int = 500, save_every: int = 5000, results_folder: str = None,
+                 use_amp: bool = False, use_latest_checkpoint: bool = True):
         """
         A framework for training a Vision-Language Model (VLT). This class wrapper has methods for loading
         a model from a recent checkpoint, saving a model periodically during training, and running a training
@@ -102,10 +104,15 @@ class Trainer:
         self.dataloader_val = dataloader_val
 
         # Configure the optimizer for training
-        self.lr = lr
-        self.adam_betas = adam_betas
-        self.weight_decay = weight_decay
-        self.opt = AdamW(self.vlm.parameters(), lr=lr, betas=adam_betas, weight_decay=weight_decay)
+        self.opt = AdamW(self.vlm.parameters(), lr=lr_start, betas=adam_betas, weight_decay=weight_decay)
+
+        warmup_steps = 5000 # Slowly ramp up the learning rate from very low to peak
+        warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
+        # Linearly decay the learning rate during training
+        decay = LinearLR(self.opt,start_factor=1.0, end_factor=lr_end / lr_start,
+                         total_iters=train_num_steps - warmup_steps)
+        # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
+        self.scheduler = SequentialLR(self.opt, schedulers=[warmup, decay], milestones=[warmup_steps])
 
         self.step = 0  # Training step counter
         self.all_losses = []  # Aggregate loss values during training
@@ -128,6 +135,7 @@ class Trainer:
         data = {"step": self.step,
                 "model": self.vlm.state_dict(),
                 "opt": self.opt.state_dict(),
+                "scheduler": self.scheduler.state_dict(),
                 }
         torch.save(data, checkpoint_path)
         # Save down all the loss values produced by model training since the last caching
@@ -149,11 +157,7 @@ class Trainer:
         self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model"])
         self.opt.load_state_dict(checkpoint_data["opt"])
-        for param_group in self.opt.param_groups:
-            param_group["lr"] = self.lr
-            param_group["betas"] = self.adam_betas
-            param_group["weight_decay"] = self.weight_decay
-
+        self.scheduler.load_state_dict(checkpoint_data["scheduler"])
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
@@ -233,6 +237,8 @@ class Trainer:
                     cpu_mem_used = psutil.virtual_memory().used / 1e9
                     msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
                     self.logger.info(msg)
+
+                self.scheduler.step() # Update the learning rate scheduler
 
                 # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep

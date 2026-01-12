@@ -66,7 +66,8 @@ if __name__ == "__main__":
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
-                "lr": 5e-4,
+                "lr_start": 1e-4,
+                "lr_end": 1e-5,
                 "weight_decay": 1e-3,
                 "train_num_steps": 300000,
                 "grad_clip": 1.0,
@@ -81,12 +82,12 @@ if __name__ == "__main__":
         config = {
             "VisionLanguageTransformer": {
                 "img_size": 224,
-                "patch_size": 14,
+                "patch_size": 16,
                 "in_channels": 3,
-                "embed_dim": 512,
-                "num_layers": 3,
-                "num_heads": 8,
-                "ffn_dim": 1024,
+                "embed_dim": 768,
+                "num_layers": 12,
+                "num_heads": 12,
+                "ffn_dim": 768 * 2,
                 "dropout": 0.1,
             },
             "DataLoader": {
@@ -95,8 +96,9 @@ if __name__ == "__main__":
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "Trainer": {
-                "lr": 5e-4,
-                "weight_decay": 1e-3,
+                "lr_start": 1e-4,
+                "lr_end": 1e-5,
+                "weight_decay": 5e-3,
                 "train_num_steps": 300000,
                 "grad_clip": 1.0,
                 "sample_every": 500,
