@@ -309,7 +309,7 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
         num_workers, pin_memory, persistent_workers = 0, False, False
     # num_workers, pin_memory, persistent_workers = 0, False, False
     return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-                      pin_memory=pin_memory, persistent_workers=persistent_workers,
+                      pin_memory=pin_memory, persistent_workers=persistent_workers, prefetch_factor=16,
                       collate_fn=lambda b: collate_fn(b, pad_token_id=sp.pad_id()))
 
 
