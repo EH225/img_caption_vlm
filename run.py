@@ -15,35 +15,6 @@ from typing import Dict
 import argparse
 
 
-def train_captioning_model(config: Dict) -> None:
-    """
-    Runs end-to-end image captioning training for a vision-language model using the VisionLanguageTransformer
-    and TrainerCaptioning classes with the configurations specified in the config file.
-
-    :param config: A config dictionary containing parameters for various aspects of the training loop and
-        model paramters for how to configure the model parameters.
-    :returns: None. Results are saved to disk.
-    """
-    # 1). Read in the sub-word sentence piece vocab model derived from the training captions
-    sp_model = spm.SentencePieceProcessor()
-    sp_model.load(os.path.join(CURRENT_DIR, "dataset/preprocessed/vocab.model"))
-
-    # 2).Init the Vision-Language transformer model
-    vlm = VisionLanguageTransformer(sp_model=sp_model, **config.get("VisionLanguageTransformer", {}))
-
-    # 3). Construct the COCO training dataset loader and validation dataset loader
-    dataloader_train = get_dataloader(split='train', add_augmentation=True,
-                                      **config.get("DataLoaderTrain", {}))
-    dataloader_val = get_dataloader(split='val', add_augmentation=False,
-                                    **config.get("DataLoaderVal", {}))
-
-    # 4). Configure the training pipeline with the trainer object
-    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, **config.get("TrainerCaptioning", {}))
-
-    # 5). Train the model to completion
-    trainer.train()
-
-
 def pre_train_mae(config: dict) -> None:
     """
     Runs MAE pre-training a vision-language model using the VisionLanguageTransformer and TrainerMAE classes
@@ -69,6 +40,49 @@ def pre_train_mae(config: dict) -> None:
 
     # 4). Configure the training pipeline with the trainer object
     trainer = TrainerMAE(vlm, decoder, dataloader_train, dataloader_val, **config.get("TrainerMAE", {}))
+
+    # 5). Train the model to completion
+    trainer.train()
+
+
+def train_captioning_model(config: Dict) -> None:
+    """
+    Runs end-to-end image captioning training for a vision-language model using the VisionLanguageTransformer
+    and TrainerCaptioning classes with the configurations specified in the config file.
+
+    :param config: A config dictionary containing parameters for various aspects of the training loop and
+        model paramters for how to configure the model parameters.
+    :returns: None. Results are saved to disk.
+    """
+    # 1). Read in the sub-word sentence piece vocab model derived from the training captions
+    sp_model = spm.SentencePieceProcessor()
+    sp_model.load(os.path.join(CURRENT_DIR, "dataset/preprocessed/vocab.model"))
+
+    # 2).Init the Vision-Language transformer model
+    vlm = VisionLanguageTransformer(sp_model=sp_model, **config.get("VisionLanguageTransformer", {}))
+
+    # 3). Construct the COCO training dataset loader and validation dataset loader
+    dataloader_train = get_dataloader(split='train', add_augmentation=True,
+                                      **config.get("DataLoaderTrain", {}))
+    dataloader_val = get_dataloader(split='val', add_augmentation=False,
+                                    **config.get("DataLoaderVal", {}))
+
+    # 4). Configure the training pipeline with the trainer object
+    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, **config.get("TrainerCaptioning", {}))
+    # Look for pretrained weights if they exist, if so then load them, otherwise skip
+    pretrained_wts_dir = config.get("TrainerMAE", {}).get("results_folder", None)
+    max_milestone = None
+    if pretrained_wts_dir is not None:
+        pretrained_wts_dir = os.path.join(pretrained_wts_dir, "checkpoints")
+        if os.path.exists(pretrained_wts_dir):
+            print(os.listdir(pretrained_wts_dir))
+            milestones = [int(x.replace("model-", "").replace(".pt", ""))
+                          for x in os.listdir(pretrained_wts_dir)]
+            if len(milestones) > 0:
+                max_milestone = max(milestones)
+
+    if max_milestone is not None: # Load in the latest pre-trained weights
+        trainer.load_pretrained(max_milestone)
 
     # 5). Train the model to completion
     trainer.train()
@@ -108,14 +122,14 @@ if __name__ == "__main__":
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "DataLoaderVal": {
-                "batch_size": 9,
+                "batch_size": 4,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "TrainerMAE": {
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
-                "weight_decay": 5e-2,
+                "weight_decay": 5e-3,
                 "train_num_steps": 50,
                 "grad_clip": 1.0,
                 "sample_every": 5,
@@ -127,12 +141,12 @@ if __name__ == "__main__":
             "TrainerCaptioning": {
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
-                "weight_decay": 5e-2,
+                "weight_decay": 5e-3,
                 "train_num_steps": 50,
                 "grad_clip": 1.0,
-                "sample_every": 5,
-                "save_every": 10,
-                "results_folder": f"{CURRENT_DIR}/debug/",
+                "sample_every": 25,
+                "save_every": 25,
+                "results_folder": f"{CURRENT_DIR}/debug/captioning",
                 "use_amp": True,
                 "use_latest_checkpoint": True,
             },
@@ -172,8 +186,8 @@ if __name__ == "__main__":
             "TrainerMAE": {
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
-                "weight_decay": 5e-2,
-                "train_num_steps": 300000,
+                "weight_decay": 5e-3,
+                "train_num_steps": 200000,
                 "grad_clip": 1.0,
                 "sample_every": 500,
                 "save_every": 5000,
@@ -184,12 +198,12 @@ if __name__ == "__main__":
             "TrainerCaptioning": {
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
-                "weight_decay": 5e-2,
-                "train_num_steps": 300000,
+                "weight_decay": 5e-3,
+                "train_num_steps": 200000,
                 "grad_clip": 1.0,
                 "sample_every": 500,
                 "save_every": 5000,
-                "results_folder": f"{CURRENT_DIR}/results",
+                "results_folder": f"{CURRENT_DIR}/results/captioning",
                 "use_amp": True,
                 "use_latest_checkpoint": True,
             },

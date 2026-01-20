@@ -576,8 +576,9 @@ class MAEdecoder(nn.Module):
     def __init__(self, img_size: int = 224, patch_size: int = 16, in_channels: int = 3, embed_dim: int = 512,
                  num_layers: int = 3, num_heads: int = 6, ffn_dim: int = 256, dropout: float = 0.1):
         """
-        Initializes a Masked Autoencoder decoder model which attempts to re-construct image patches that have been
-        masked to create a self-supervised training objective to pre-train the vision-transformer image encoder.
+        Initializes a Masked Autoencoder decoder model which attempts to re-construct image patches that have
+        been masked to create a self-supervised training objective to pre-train the vision-transformer image
+        encoder.
 
         :param img_size: An integer representing the height & width of input image (assumes square image).
         :param patch_size: An integer representing height & width of each patch (square patch).
@@ -606,27 +607,27 @@ class MAEdecoder(nn.Module):
         # Add learnable positional embeddings for the image patches relative to one another
         self.img_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
 
-        # Initialize a mask token as a vector of learnable parameters which will be used during decoding, we will
-        # concat copies of this token with the visible token ouputs from the encoder to get a full set of image
-        # patches, then posiitonal embeddings will be added and the full set of image patch tokens passed through
-        # the decoder model to predict reconstructions of the masked image patches
+        # Initialize a mask token as a vector of learnable parameters which will be used during decoding, we
+        # will concat copies of this token with the visible token ouputs from the encoder to get a full set of
+        # image patches, then posiitonal embeddings will be added and the full set of image patch tokens
+        # passed through the decoder model to predict reconstructions of the masked image patches
         self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))  # (1, 1, embed_dim)
         nn.init.normal_(self.mask_token, std=0.02)
 
-        # Use a shallow decoder transformer model that uses full bidirectional self-attention across all tokens
-        # to re-constructed the masked image patches, this model will take in (N, num_patches, embed_dim) and
+        # Use a shallow decoder transformer model that uses full bidirectional self-attention across all
+        # tokens to re-constructed the masked image patches, this model will take in (N, num_patches, E) and
         # output a tensor of the same size after applying the transformer operations
         decoder_layer = TransformerEncoderLayer(embed_dim, num_heads, ffn_dim, dropout)
         self.decoder = TransformerEncoder(decoder_layer, num_layers)
-        # A final projection layer to map the embed_dim latent representations of the masked image patches into
-        # pixels i.e. (N, num_patches, embed_dim) -> (N, num_patches, patch_dim)
+        # A final projection layer to map the embed_dim latent representations of the masked image patches
+        # into pixels i.e. (N, num_patches, embed_dim) -> (N, num_patches, patch_dim)
         self.patch_proj = nn.Linear(self.embed_dim, self.patch_dim)
 
     def forward(self, x_vis_latent: torch.Tensor, mask: torch.Tensor,
                 ids_restore: torch.Tensor) -> torch.Tensor:
         """
-        Computes a forward pass through the MAE decoder model which seeks to re-construct the pixel values of the
-        masked image patches using the encoder outputs from the VLM model.
+        Computes a forward pass through the MAE decoder model which seeks to re-construct the pixel values of
+        the masked image patches using the encoder outputs from the VLM model.
 
         :param x_vis_latent: A batch of deep latent representations of visible (unmasked) image pathces of size
             (N, num_patches_vis, embed_dim) which does not include the CLS token.
@@ -634,9 +635,9 @@ class MAEdecoder(nn.Module):
         :param ids_restore: A tensor of size (N, num_patches) which records the original ordering of the image
             patches for re-construction since x_vis_latent is shuffled and only contains the visible ones.
         :returns:
-            - out: A tensor of size (N, num_patches, patch_dim) containing the pixels of the fully reconstructed
-                image where patch_dim = patch_size * patch_size * in_channels and denotes the number of pixels in
-                each image patch.
+            - out: A tensor of size (N, num_patches, patch_dim) containing the pixels of the fully
+                reconstructed image where patch_dim = patch_size * patch_size * in_channels and denotes the
+                number of pixels in each image patch.
             - mask: A tensor of size (N, num_patches) which records which image patches were masked with a 1.
         """
         N, num_patches, embed_dim = x_vis_latent.shape  # Get the batch size
@@ -648,14 +649,14 @@ class MAEdecoder(nn.Module):
                                              1)  # (N, num_patches_masked, embed_dim)
         # Combined the visible tokens with the mask tokens to create a full set of tokens for the decoder
         x_full = torch.cat([x_vis_latent, mask_tokens], dim=1)  # (N, num_patches, embed_dim)
-        # However, all the visible tokens are at the front and all the masked ones are in the back, restore the
-        # original ordering of the tokens by using ids_restore to unshuffle them (N, num_patches, embed_dim)
+        # However, all the visible tokens are at the front and all the masked ones are in the back, restore
+        # the original ordering of the tokens by using ids_restore to unshuffle (N, num_patches, embed_dim)
         x_full = torch.gather(x_full, dim=1,
                               index=ids_restore.unsqueeze(-1).expand(-1, -1, self.embed_dim))
         x_full = x_full + self.img_pos_embed  # Add positional encodings to all image patch tokens
         # Then pass the full set of image patch tokens through the decoder model and project to pixels
         out = self.patch_proj(self.decoder(x_full))  # (N, num_patches, patch_dim), patch_dim = P * P * C
-        return out, mask  # (N, num_patches, patch_dim), (N, num_patches) with 1s denoting the masked img patches
+        return out, mask  # (N, num_patches, patch_dim), (N, num_patches) with 1s for the masked img patches
 
 
 ###############################################

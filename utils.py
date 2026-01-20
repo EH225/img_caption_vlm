@@ -79,19 +79,32 @@ def normalize_patches(patches: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return whitened_patches
 
 
-def denormalize_patches(patches: torch.Tensor, pred_patches: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def denormalize_patches(original_patches: torch.Tensor, pred_patches: torch.Tensor,
+                        eps: float = 1e-6) -> torch.Tensor:
     """
     This helper function reverses patch normalization.
 
-    :param patches: An input batch of image patches of size (N, num_patches, patch_dim) from which to compute
-        means and variances.
+    :param original_patches: An input batch of image patches of size (N, num_patches, patch_dim) from which
+        to compute means and variances to reverse the whitening operation.
     :param pred_patches: An input batch of image patches of size (N, num_patches, patch_dim) that will be
-        un-normalized using the mean and variance from patches.
+        un-normalized using the mean and variance from original_patches.
     :returns: pred_patches after reversing the patch-level normalization.
     """
-    mean = patches.mean(dim=-1, keepdim=True)  # Compute the per patch mean pixel value
-    var = patches.var(dim=-1, keepdim=True, unbiased=False)  # Compute the per patch pixel variance
+    mean = original_patches.mean(dim=-1, keepdim=True)  # Compute the per patch mean pixel value
+    var = original_patches.var(dim=-1, keepdim=True, unbiased=False)  # Compute the per patch pixel variance
     return pred_patches * torch.sqrt(var + eps) + mean
+
+
+def denormalize_imagenet(imgs: torch.Tensor) -> torch.Tensor:
+    """
+    Reverse the standard mean and stddev scaling normalizations applied in the data-loader.
+
+    :param imgs: An input batch of images of size (N, C, H, W) to reverse the normalizations of.
+    :returns: An output batch of images of the same size as the input with the normalizations undone.
+    """
+    mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
+    return imgs * std + mean
 
 
 def save_patch_grid(images: torch.Tensor, patch_size: int, grid_size: int, n_channels: int,
@@ -112,6 +125,6 @@ def save_patch_grid(images: torch.Tensor, patch_size: int, grid_size: int, n_cha
     N, num_patches, patch_dim = images.shape
     H = W = int(num_patches ** 0.5)
     img_grid = images.view(N, H, W, n_channels, patch_size, patch_size).permute(0, 3, 1, 4, 2, 5).contiguous()
-    img_grid = img_grid.view(N, n_channels, H * patch_size, W * patch_size)
+    img_grid = denormalize_imagenet(img_grid.view(N, n_channels, H * patch_size, W * patch_size)).clamp(0, 1)
     save_image(img_grid, filepath, nrow=grid_size)
-    print(f"Saved {N} images as a [{grid_size}x{grid_size}] grid to {filepath}")
+
