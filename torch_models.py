@@ -324,16 +324,16 @@ class PatchEmbedding(nn.Module):
     #     patches = x.flatten(start_dim=2).transpose(1, 2)  # (N, num_patches, patch_dim)
     #     return patches  # (N, num_patches, patch_dim)
 
-    # def forward(self, imgs: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Computes a forward pass for each image in the input batch and converts them into a set of image patch
-    #     embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
+    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
+        """
+        Computes a forward pass for each image in the input batch and converts them into a set of image patch
+        embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
 
-    #     :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
-    #     :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
-    #         (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
-    #     """
-    #     return self.proj(self.patchify(imgs))
+        :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
+        :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
+            (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
+        """
+        return self.proj(self.patchify(imgs))
 
 
 class PositionalEmbedding(nn.Module):
