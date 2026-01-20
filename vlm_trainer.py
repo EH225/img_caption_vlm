@@ -8,11 +8,12 @@ from tqdm.auto import tqdm
 from torch.optim import AdamW
 from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import save_patch_grid, plot_and_save_loss
+from utils import plot_and_save_loss, denormalize_imagenet
 import logging
 import psutil
 import pandas as pd
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
 from torch_models import VisionLanguageTransformer, MAEdecoder
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
@@ -295,7 +296,7 @@ class TrainerMAE:
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
                     self.save(self.step)
-                    plot_and_save_loss(self.losses_folder) # Generate a new plot of the training losses
+                    plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
                     torch.cuda.empty_cache()
@@ -319,26 +320,54 @@ class TrainerMAE:
                     self.vlm.eval()
                     self.decoder.eval()
 
+                    imgs_original = imgs.clone()  # Make a copy before
+
                     # Pass the val set images through the MAE encoder (N, num_patches_vis, patch_dim)
                     x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
+
+                    assert torch.allclose(imgs, imgs_original), "here 1"
+
                     # Generate decoded image reconstructions of size (N, num_patches, patch_dim)
                     pred_imgs, mask = self.decoder(x_vis_latent, mask, ids_restore)
+
+                    assert torch.allclose(imgs, imgs_original), "here 2"
+
                     # Patchify the original images so that we can use them for filling
                     img_patches = self.vlm.patch_embed.patchify(imgs)  # (N, num_patches, patch_dim)
+
+                    img_patches_original = img_patches.clone()
+
+                    assert torch.allclose(imgs, imgs_original), "here 3"
+
                     # Create a masked version of the original images, fill zeros for the masked patches
                     img_patches_masked = torch.where(mask.unsqueeze(-1) == 0, img_patches, 0)
+
+                    assert torch.allclose(imgs, imgs_original), "here 4"
+                    assert torch.allclose(img_patches, img_patches_original), "here 44"
+
                     # The decoder is trained to predict the whitened pixel values, reverse the normalization
                     pred_imgs = denormalize_patches(img_patches, pred_imgs.detach())
+
+                    assert torch.allclose(imgs, imgs_original), "here 5"
+                    assert torch.allclose(img_patches, img_patches_original), "here 55"
+
                     # Fill the unmasked image patchs with the actual image patch data to blend with the true
                     pred_imgs_filled = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
+
+                    assert torch.allclose(imgs, imgs_original), "here 6"
+                    assert torch.allclose(img_patches, img_patches_original), "here 66"
+
                     # Combine all the image tensors into 1 big tensor so that they can be saved to disk
                     # Original + Original Masked + Pred + Pred Blended with Original
                     N, num_patches, patch_dim = img_patches.shape
                     tensors = [img_patches, img_patches_masked, pred_imgs, pred_imgs_filled]
                     x = torch.stack(tensors, dim=1).reshape(N * len(tensors), num_patches, patch_dim)
-                    # Save the values to an image grid periodically
+                    # Convert from (N*4, num_patches, patch_dim) -> (N, C, H, W)
+                    img_grid = denormalize_imagenet(self.vlm.patch_embed.unpatchify(x))
+
+                    # Save the values to an image grid in the samples folder
                     output_filepath = f"{os.path.join(self.samples_folder, str(self.step))}.png"
-                    save_patch_grid(x, self.decoder.patch_size, filepath=output_filepath)
+                    save_image(img_grid, output_filepath, nrow=4)
                     self.logger.info(f"Saved sampled image grid to {output_filepath}")
 
                     # Switch the models back over to continue training
@@ -431,7 +460,7 @@ class TrainerCaptioning:
         self.dataloader_val = dataloader_val
 
         # Configure the optimizer for training - segment the encoder training parameters from the decoder
-        self.encoder_params = list(self.vlm.patch_embed.parameters()) + list(self.vlm.encoder.parameters())
+        self.encoder_params = list(self.vlm.encoder.parameters())
         self.encoder_params += [self.vlm.img_pos_embed, self.vlm.cls_token]
 
         self.decoder_params = list(self.vlm.visual_projection.parameters())
@@ -598,7 +627,7 @@ class TrainerCaptioning:
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
                     self.save(self.step)
-                    plot_and_save_loss(self.losses_folder) # Generate a new plot of the training losses
+                    plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
                     torch.cuda.empty_cache()

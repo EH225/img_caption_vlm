@@ -130,7 +130,7 @@ if __name__ == "__main__":
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
                 "weight_decay": 5e-3,
-                "train_num_steps": 50,
+                "train_num_steps": 500,
                 "grad_clip": 1.0,
                 "sample_every": 5,
                 "save_every": 10,
@@ -210,4 +210,4 @@ if __name__ == "__main__":
         }
 
     pre_train_mae(config)  # Run model pre-training
-    train_captioning_model(config)  # Run model training
+    # train_captioning_model(config)  # Run model training

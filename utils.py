@@ -5,8 +5,8 @@ import torch, os
 import numpy as np
 import pandas as pd
 from typing import List, Union
-from torchvision.utils import save_image
 import matplotlib.pyplot as plt
+
 
 def get_device():
     """
@@ -108,26 +108,6 @@ def denormalize_imagenet(imgs: torch.Tensor) -> torch.Tensor:
     return (imgs * std + mean).clamp(0, 1)
 
 
-def save_patch_grid(images: torch.Tensor, patch_size: int, filepath: str) -> None:
-    """
-    Takes an input tensor of images of size (N, num_patches, patch_dim), reshapes them into an image grid,
-    and saves them to disk. This function assumes that the images have a value of N that is divisible by 4.
-
-    :param images: An input tensor of size (N, num_patches, patch_dim) containing image pixels to be saved to
-        disk as an image grid.
-    :param patch_size: The size of each patch as an int e.g. 14 or 16. The relation to patch_dim is:
-        patch_dim = n_channels * patch_size ** 2.
-    :param filename: The file path to save the image grid to.
-    :returns: None, saves the image grid to disk.
-    """
-    N, num_patches, patch_dim = images.shape
-    C = 3 # Alawys assume there are 3 color channels for RGB
-    H = W = int(num_patches ** 0.5)
-    img_grid = images.view(N, H, W, C, patch_size, patch_size).permute(0, 3, 1, 4, 2, 5).contiguous()
-    # Reverse the ImageNet standard transforms so that they are back in the original colors
-    img_grid = denormalize_imagenet(img_grid.view(N, C, H * patch_size, W * patch_size))
-    save_image(img_grid, filepath, nrow=4)
-
 def plot_and_save_loss(loss_dir: str) -> None:
     """
     Combines all the data cached to a directory of loss value outputs and combines them together to create a
@@ -137,20 +117,20 @@ def plot_and_save_loss(loss_dir: str) -> None:
     :returns: None, generates a plot that is then saved to disk.
     """
     filenames = [x for x in os.listdir(loss_dir) if x.startswith("losses") and x.endswith(".csv")]
-    if len(filenames) > 0: # Otherwise do nothing
+    if len(filenames) > 0:  # Otherwise do nothing
         all_losses = []
         milestones = [int(x.replace("losses-", "").replace(".csv", "")) for x in filenames]
         for m in sorted(milestones):
             df = pd.read_csv(os.path.join(loss_dir, f"losses-{m}.csv"), index_col=0)
             all_losses.extend(df.iloc[:, 0].tolist())
-        all_losses = pd.Series(all_losses) # Convert to a pd.Series for ease of use
-        all_losses.index += 1 # Set the index to begin at 1
+        all_losses = pd.Series(all_losses)  # Convert to a pd.Series for ease of use
+        all_losses.index += 1  # Set the index to begin at 1
         # Create a plot and save it to the same directory
-        plt.figure(figsize=(10, 3))
-        plt.plot(all_losses, zorder=3)
-        plt.ylabel("Loss")
-        plt.xlabel("Training Step")
-        plt.title("Training Loss")
-        plt.grid(color="lightgray", zorder=-3)
-        plt.savefig(os.path.join(loss_dir, "training_loss.png"), dpi=300, bbox_inches='tight')
-
+        fig, ax = plt.subplots(1, 1, figsize=(10, 3))
+        ax.plot(all_losses, zorder=3)
+        ax.set_ylabel("Loss")
+        ax.set_xlabel("Training Step")
+        ax.set_title("Training Loss")
+        ax.grid(color="lightgray", zorder=-3)
+        fig.savefig(os.path.join(loss_dir, "training_loss.png"), dpi=300, bbox_inches='tight')
+        plt.close(fig)

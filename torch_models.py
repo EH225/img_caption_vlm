@@ -261,29 +261,50 @@ class PatchEmbedding(nn.Module):
         # A final linear projection layer applied to flattened patches to convert them to the embed_dim
         self.proj = nn.Linear(self.patch_dim, embed_dim)
 
-    # def patchify_legacy(self, x: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     LEGACY VERSION - NOT USED IN PRODUCTION
-    #     Computes a forward pass for each image in the input batch and converts them into a set of image patch
-    #     embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
-
-    #     :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
-    #     :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
-    #         (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
-    #     """
-    #     N, C, H, W = x.shape
-    #     msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
-    #     assert H == self.img_size and W == self.img_size, msg
-    #     # Divide the image into non-overlapping patches of size (patch_size x patch_size x c)
-    #     # (N, C, H, W) -> (N, num_patches, C, patch_size, patch_size)
-    #     # E.g. x.shape = ([2, 3, 16, 16]) 2 images, 3 channels, each img 16 x 16
-    #     patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
-    #     # E.g. patches.shape = ([2, 3, 2, 2, 8, 8]) 2 images, 3 channels, 2 + 2 = 4 patches, 8x8 patch size
-    #     patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(N, -1, C, self.patch_size, self.patch_size)
-    #     # E.g. patches.shape = ([2, 4, 3, 8, 8]) 2 images, 4 patches, 3 channels, 8x8 patch size
-    #     return patches = torch.flatten(patches, start_dim=2)
-
     def patchify(self, imgs: torch.Tensor) -> torch.Tensor:
+        """
+        Converts a batch of input images of size (N, C, H, W) into image patches (N, num_patches, patch_dim)
+        where patch_dim = patch_size * patch_size * in_channels. Input images are expected to be square and
+        divisible by patch_size. This operation is a deterministic inverse of unpatchify.
+
+
+        :param imgs: An input image tensor of shape (N, C, H, W) where H == W, square images.
+        :returns: A patch embedding tensor of shape (N, num_patches, patch_dim) where num_patches is equal to
+            (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
+        """
+        N, C, H, W = imgs.shape  # Unpack the input dimension of the images
+        msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
+        assert H == self.img_size and W == self.img_size, msg
+        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Img not evenly divisible by patch_size"
+        h = H // self.patch_size  # Determine how many patches from top to bottom
+        w = W // self.patch_size  # Determine how many patches from left to right
+        x = imgs.reshape(N, C, h, self.patch_size, w, self.patch_size)
+        x = x.permute(0, 2, 4, 3, 5, 1)
+        patches = x.reshape(N, h * w, self.patch_size * self.patch_size * C)
+        return patches  # (N, num_patches, patch_dim)
+
+    def unpatchify(self, patches: torch.Tensor) -> torch.Tensor:
+        """
+        Converts a collection of image patches of size (N, num_patches, patch_dim) to a image tensor of size
+        (N, C, H, W). Images are expected to be square and divisible by patch_size. This operation is a
+        deterministic inverse of patchify.
+
+        :param patches: An input image tensor of shape (N, num_patches, patch_dim).
+        :returns: An image tensor of size (N, C, H, W) that reverses the patching operation.
+        """
+        N, num_patches, patch_dim = patches.shape  # Unpack the dimensions of the input image patches
+        H = W = self.img_size  # Images are expected to be square
+        C = patch_dim // (self.patch_size * self.patch_size)
+        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Img not evenly divisible by patch_size"
+        h = H // self.patch_size  # Determine how many patches from top to bottom
+        w = W // self.patch_size  # Determine how many patches from left to right
+        assert num_patches == h * w, "num_patches does not match expectations"
+        x = patches.reshape(N, h, w, self.patch_size, self.patch_size, C)  # (N, h, w, p, p, C)
+        x = x.permute(0, 5, 1, 3, 2, 4)  # (N, C, h, patch_size, w, patch_size)
+        imgs = x.reshape(N, C, H, W)  # (N, C, H, W)
+        return imgs
+
+    def patchify_conv2d(self, imgs: torch.Tensor) -> torch.Tensor:
         """
         Converts a batch of input images (imgs of size (N, C, H, W)) into image patches for each obs of size
         (N, num_patches, patch_size * patch_size * in_channels)
