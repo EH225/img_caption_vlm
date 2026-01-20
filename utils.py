@@ -104,27 +104,26 @@ def denormalize_imagenet(imgs: torch.Tensor) -> torch.Tensor:
     """
     mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
-    return imgs * std + mean
+    return (imgs * std + mean).clamp(0, 1)
 
 
-def save_patch_grid(images: torch.Tensor, patch_size: int, grid_size: int, n_channels: int,
-                    filepath: str) -> None:
+def save_patch_grid(images: torch.Tensor, patch_size: int, filepath: str) -> None:
     """
     Takes an input tensor of images of size (N, num_patches, patch_dim), reshapes them into an image grid,
-    and saves them to disk.
+    and saves them to disk. This function assumes that the images have a value of N that is divisible by 4.
 
     :param images: An input tensor of size (N, num_patches, patch_dim) containing image pixels to be saved to
         disk as an image grid.
     :param patch_size: The size of each patch as an int e.g. 14 or 16. The relation to patch_dim is:
         patch_dim = n_channels * patch_size ** 2.
-    :param grid_size: The size of the image grid, N should equal grid_size ** 2.
-    :param n_channels: The number of color channels of the images.
     :param filename: The file path to save the image grid to.
     :returns: None, saves the image grid to disk.
     """
     N, num_patches, patch_dim = images.shape
+    C = 3 # Alawys assume there are 3 color channels for RGB
     H = W = int(num_patches ** 0.5)
-    img_grid = images.view(N, H, W, n_channels, patch_size, patch_size).permute(0, 3, 1, 4, 2, 5).contiguous()
-    img_grid = denormalize_imagenet(img_grid.view(N, n_channels, H * patch_size, W * patch_size)).clamp(0, 1)
-    save_image(img_grid, filepath, nrow=grid_size)
+    img_grid = images.view(N, H, W, C, patch_size, patch_size).permute(0, 3, 1, 4, 2, 5).contiguous()
+    # Reverse the ImageNet standard transforms so that they are back in the original colors
+    img_grid = denormalize_imagenet(img_grid.view(N, C, H * patch_size, W * patch_size))
+    save_image(img_grid, filepath, nrow=4)
 

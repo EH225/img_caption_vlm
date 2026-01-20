@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 from torch.optim import AdamW
 from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import save_patch_grid
+from utils import save_patch_grid, denormalize_imagenet
 import logging
 import psutil
 import pandas as pd
@@ -318,18 +318,26 @@ class TrainerMAE:
                     self.vlm.eval()
                     self.decoder.eval()
 
+                    # Pass the val set images through the MAE encoder (N, num_patches_vis, patch_dim)
                     x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
-                    # Generated decoded image reconstructions (N, num_patches, patch_dim)
+                    # Generate decoded image reconstructions of size (N, num_patches, patch_dim)
                     pred_imgs, mask = self.decoder(x_vis_latent, mask, ids_restore)
+                    # Patchify the original images so that we can use them for filling
                     img_patches = self.vlm.patch_embed.patchify(imgs)  # (N, num_patches, patch_dim)
+                    # Create a masked version of the original images, fill zeros for the masked patches
+                    img_patches_masked = torch.where(mask.unsqueeze(-1) == 0, img_patches, 0)
+                    # The decoder is trained to predict the whitened pixel values, reverse the normalization
                     pred_imgs = denormalize_patches(img_patches, pred_imgs.detach())
-                    # Fill the unmasked image patchs with the actual image patch data
-                    pred_imgs = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
+                    # Fill the unmasked image patchs with the actual image patch data to blend with the true
+                    pred_imgs_filled = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
+                    # Combine all the image tensors into 1 big tensor so that they can be saved to disk
+                    # Original + Original Masked + Pred + Pred Blended with Original
+                    N, num_patches, patch_dim = img_patches.shape
+                    tensors = [img_patches, img_patches_masked, pred_imgs, pred_imgs_filled]
+                    x = torch.stack(tensors, dim=1).reshape(N * len(tensors), num_patches, patch_dim)
                     # Save the values to an image grid periodically
                     output_filepath = f"{os.path.join(self.samples_folder, str(self.step))}.png"
-                    grid_size = int(pred_imgs.shape[0] ** 0.5)  # Should be a square grid
-                    save_patch_grid(pred_imgs, self.decoder.patch_size, grid_size=grid_size,
-                                    n_channels=3, filepath=output_filepath)
+                    save_patch_grid(x, self.decoder.patch_size, filepath=output_filepath)
                     self.logger.info(f"Saved sampled image grid to {output_filepath}")
 
                     # Switch the models back over to continue training
@@ -579,7 +587,7 @@ class TrainerCaptioning:
                 pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}",
                                  grad=f"{grad_norm:.3f}", logit_std=f"{outputs.std(dim=-1).mean():.3f}")
 
-                # self.scheduler.step()  # Update the learning rate scheduler
+                self.scheduler.step()  # Update the learning rate scheduler
 
                 # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
