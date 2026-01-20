@@ -320,43 +320,18 @@ class TrainerMAE:
                     self.vlm.eval()
                     self.decoder.eval()
 
-                    imgs_original = imgs.clone()  # Make a copy before
-
                     # Pass the val set images through the MAE encoder (N, num_patches_vis, patch_dim)
                     x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
-
-                    assert torch.allclose(imgs, imgs_original), "here 1"
-
                     # Generate decoded image reconstructions of size (N, num_patches, patch_dim)
                     pred_imgs, mask = self.decoder(x_vis_latent, mask, ids_restore)
-
-                    assert torch.allclose(imgs, imgs_original), "here 2"
-
                     # Patchify the original images so that we can use them for filling
                     img_patches = self.vlm.patch_embed.patchify(imgs)  # (N, num_patches, patch_dim)
-
-                    img_patches_original = img_patches.clone()
-
-                    assert torch.allclose(imgs, imgs_original), "here 3"
-
                     # Create a masked version of the original images, fill zeros for the masked patches
                     img_patches_masked = torch.where(mask.unsqueeze(-1) == 0, img_patches, 0)
-
-                    assert torch.allclose(imgs, imgs_original), "here 4"
-                    assert torch.allclose(img_patches, img_patches_original), "here 44"
-
                     # The decoder is trained to predict the whitened pixel values, reverse the normalization
                     pred_imgs = denormalize_patches(img_patches, pred_imgs.detach())
-
-                    assert torch.allclose(imgs, imgs_original), "here 5"
-                    assert torch.allclose(img_patches, img_patches_original), "here 55"
-
                     # Fill the unmasked image patchs with the actual image patch data to blend with the true
                     pred_imgs_filled = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
-
-                    assert torch.allclose(imgs, imgs_original), "here 6"
-                    assert torch.allclose(img_patches, img_patches_original), "here 66"
-
                     # Combine all the image tensors into 1 big tensor so that they can be saved to disk
                     # Original + Original Masked + Pred + Pred Blended with Original
                     N, num_patches, patch_dim = img_patches.shape
