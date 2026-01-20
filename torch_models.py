@@ -240,23 +240,23 @@ class PatchEmbedding(nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
         self.patch_dim = patch_size * patch_size * in_channels
 
-        # For extracting out the image patches
-        C, P = in_channels, patch_size  # Input channels, pixel size of each patch side
-        patch_dim = C * P * P  # The number of pixels in each patch (length when flattened)
-        self.img_patch_conv2d = nn.Conv2d(in_channels=C, out_channels=patch_dim,
-                                          kernel_size=P, stride=P, bias=False)
+        # # For extracting out the image patches
+        # C, P = in_channels, patch_size  # Input channels, pixel size of each patch side
+        # patch_dim = C * P * P  # The number of pixels in each patch (length when flattened)
+        # self.img_patch_conv2d = nn.Conv2d(in_channels=C, out_channels=patch_dim,
+        #                                   kernel_size=P, stride=P, bias=False)
 
-        # Initialize weights to extract patches, create an identity function using conv2d to create patches
-        with torch.no_grad():
-            self.img_patch_conv2d.weight.zero_()  # Start with all zeros and then selectively add 1s
-            out_idx = torch.arange(patch_dim)  # Values [0, 1, 2, ... patch_dim - 1]
-            c_idx = out_idx // (P * P)  # Channel index values [0, 0, ... 1, 1, ..., 2, 2]
-            # Which patch each idx belongs to:
-            # [0, ... n_patches-1, 0, ..., n_patches - 1, 0, ..., n_patches - 1]
-            idx_in_patch = out_idx % (P * P)
-            i_idx = idx_in_patch // P  # Row
-            j_idx = idx_in_patch % P  # Col
-            self.img_patch_conv2d.weight[out_idx, c_idx, i_idx, j_idx] = 1.0
+        # # Initialize weights to extract patches, create an identity function using conv2d to create patches
+        # with torch.no_grad():
+        #     self.img_patch_conv2d.weight.zero_()  # Start with all zeros and then selectively add 1s
+        #     out_idx = torch.arange(patch_dim)  # Values [0, 1, 2, ... patch_dim - 1]
+        #     c_idx = out_idx // (P * P)  # Channel index values [0, 0, ... 1, 1, ..., 2, 2]
+        #     # Which patch each idx belongs to:
+        #     # [0, ... n_patches-1, 0, ..., n_patches - 1, 0, ..., n_patches - 1]
+        #     idx_in_patch = out_idx % (P * P)
+        #     i_idx = idx_in_patch // P  # Row
+        #     j_idx = idx_in_patch % P  # Col
+        #     self.img_patch_conv2d.weight[out_idx, c_idx, i_idx, j_idx] = 1.0
 
         # A final linear projection layer applied to flattened patches to convert them to the embed_dim
         self.proj = nn.Linear(self.patch_dim, embed_dim)
@@ -266,7 +266,6 @@ class PatchEmbedding(nn.Module):
         Converts a batch of input images of size (N, C, H, W) into image patches (N, num_patches, patch_dim)
         where patch_dim = patch_size * patch_size * in_channels. Input images are expected to be square and
         divisible by patch_size. This operation is a deterministic inverse of unpatchify.
-
 
         :param imgs: An input image tensor of shape (N, C, H, W) where H == W, square images.
         :returns: A patch embedding tensor of shape (N, num_patches, patch_dim) where num_patches is equal to
@@ -304,37 +303,37 @@ class PatchEmbedding(nn.Module):
         imgs = x.reshape(N, C, H, W)  # (N, C, H, W)
         return imgs
 
-    def patchify_conv2d(self, imgs: torch.Tensor) -> torch.Tensor:
-        """
-        Converts a batch of input images (imgs of size (N, C, H, W)) into image patches for each obs of size
-        (N, num_patches, patch_size * patch_size * in_channels)
+    # def patchify_conv2d(self, imgs: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Converts a batch of input images (imgs of size (N, C, H, W)) into image patches for each obs of size
+    #     (N, num_patches, patch_size * patch_size * in_channels)
 
-        :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
-        :returns: A collection of image patches for each image of size (N, num_patches, P * P * C) where
-            num_patches is equal to (img_size // patch_size) ** 2. Patches are tiled from top left to bottom
-            right.
-        """
-        N, C, H, W = imgs.shape
-        msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
-        assert H == self.img_size and W == self.img_size, msg
-        # Divide the image into non-overlapping patches of size (patch_size x patch_size x c)
-        # (N, C, H, W) -> (N, num_patches, C, patch_size, patch_size)
-        # E.g. x.shape = ([2, 3, 16, 16]) 2 images, 3 channels, each img is 16 x 16
-        x = self.img_patch_conv2d(imgs)  # (N, P*P*C, H/P=patch_size, W/P=patch_size)
-        # patch_dim = P * P * C = patch_size * patch_size * in_channels
-        patches = x.flatten(start_dim=2).transpose(1, 2)  # (N, num_patches, patch_dim)
-        return patches  # (N, num_patches, patch_dim)
+    #     :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
+    #     :returns: A collection of image patches for each image of size (N, num_patches, P * P * C) where
+    #         num_patches is equal to (img_size // patch_size) ** 2. Patches are tiled from top left to bottom
+    #         right.
+    #     """
+    #     N, C, H, W = imgs.shape
+    #     msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
+    #     assert H == self.img_size and W == self.img_size, msg
+    #     # Divide the image into non-overlapping patches of size (patch_size x patch_size x c)
+    #     # (N, C, H, W) -> (N, num_patches, C, patch_size, patch_size)
+    #     # E.g. x.shape = ([2, 3, 16, 16]) 2 images, 3 channels, each img is 16 x 16
+    #     x = self.img_patch_conv2d(imgs)  # (N, P*P*C, H/P=patch_size, W/P=patch_size)
+    #     # patch_dim = P * P * C = patch_size * patch_size * in_channels
+    #     patches = x.flatten(start_dim=2).transpose(1, 2)  # (N, num_patches, patch_dim)
+    #     return patches  # (N, num_patches, patch_dim)
 
-    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
-        """
-        Computes a forward pass for each image in the input batch and converts them into a set of image patch
-        embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
+    # def forward(self, imgs: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Computes a forward pass for each image in the input batch and converts them into a set of image patch
+    #     embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
 
-        :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
-        :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
-            (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
-        """
-        return self.proj(self.patchify(imgs))
+    #     :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
+    #     :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
+    #         (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
+    #     """
+    #     return self.proj(self.patchify(imgs))
 
 
 class PositionalEmbedding(nn.Module):
