@@ -84,6 +84,23 @@ def preprocess_images(original_img_dir: str, output_image_dir: str, target_size:
 ### Caption Pre-Processing ###
 ##############################
 
+
+def clean_caption(caption: str) -> str:
+    """
+    Performs data cleaning on an input caption string provided and returns the cleaned caption string.
+
+    Makes all letters lower case, removes excess whitespace at the start and end, and adds an ending period
+    if no end punctuation is present. Removes other special characters as well that are non-standard.
+
+    :param caption: A string caption for an image.
+    :return: A cleaned version of the caption string.
+    """
+    all_chars = set("abcdefghijklmnopqrstuvwxyz, ")  # Define the set of allowable characters
+    caption = caption.lower().strip()  # Set only the first letter to be capital, remove extra whitespace
+    caption = "".join([x for x in caption if x in all_chars])  # Remove atypical characters
+    return caption
+
+
 def create_vocab(train_captions_path: str, output_dir: str, vocab_size: int = 10000) -> None:
     """
     Creates a vocab.model and vocab.vocab file by training a sub-piece sentence tokenizer on the corpus of
@@ -106,6 +123,7 @@ def create_vocab(train_captions_path: str, output_dir: str, vocab_size: int = 10
             all_captions.append(d["caption"])
 
     all_captions = pd.DataFrame(all_captions)  # Convert to a dataframe and write to CSV
+    all_captions[0] = all_captions[0].apply(clean_caption)  # Clean the captions
     all_captions_train_path = os.path.join(output_dir, "all_captions_train.csv")
     all_captions.to_csv(all_captions_train_path)
 
@@ -114,13 +132,15 @@ def create_vocab(train_captions_path: str, output_dir: str, vocab_size: int = 10
     # token at index 1, <s> at index 2 and </s> at index 3
     spm.SentencePieceTrainer.train(input=all_captions_train_path,
                                    model_prefix=os.path.join(output_dir, "vocab"),
-                                   vocab_size=vocab_size, pad_id=0, pad_piece="<pad>", unk_id=1,
-                                   bos_id=2, eos_id=3)
+                                   vocab_size=vocab_size, model_type="unigram", character_coverage=0.9995,
+                                   pad_id=0, unk_id=1, bos_id=2, eos_id=3,
+                                   pad_piece="<PAD>", unk_piece="<UNK>", bos_piece="<s>", eos_piece="</s>",
+                                   num_threads=8)
     os.remove(all_captions_train_path)  # Delete this csv file when finished
 
 
 def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: str,
-                      max_tokens: int = 100) -> None:
+                      max_tokens: int = 50) -> None:
     """
     This function reads in all the captions saved to a particular captions_path and tokenizes them using a
     saved sentence piece tokenizer trained and saved to disk. This method saves the results as a .pt file
@@ -145,9 +165,11 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
 
     # 3). Tokenize all the captions and aggregate them as a list of lists of ints for each img in the dataset
     output_dict = {}
+    bos, eos = sp.bos_id(), sp.eos_id()
     for d in caption_dicts:  # Tokenize each of the captions into integers, truncate, and pad if needed
-        tokens = [[sp.bos_id()] + sp.encode(x["caption"], out_type=int)[:(max_tokens - 2)] + [sp.eos_id()]
-                  for x in d]  # Add <s> and </s> tokens to either size, cap at max_tokens in total
+        tokens = [
+            [bos] + sp.encode(clean_caption(x["caption"]), out_type=int)[:(max_tokens - 2)] + [eos]
+            for x in d]  # Add <s> and </s> tokens to either size, cap at max_tokens in total
         # Record image_id: List[List[int]] to associate the caption token sequences with each image
         output_dict[d[0]["image_id"]] = tokens
 
@@ -233,7 +255,8 @@ class CocoCaptionDataset(Dataset):
 
 
 def get_dataloader(split: str = "train", batch_size: int = 128, device: str = None,
-                   include_captions: bool = True, dataset_dir: str = None) -> DataLoader:
+                   include_captions: bool = True, add_augmentation: bool = False,
+                   dataset_dir: str = None) -> DataLoader:
     """
     This method returns a DataLoader object by loading in the pre-processed dataset from disk.
 
@@ -241,6 +264,8 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     :param batch_size: The batch size for the data loader.
     :param device: A string denoting the device.
     :param include_captions: If True, then the dataloader is constructed with captions.
+    :param add_augmentation: If True, then the dataloader applies modest data augmentation operations to the
+        batched images to increase image diversity and reduce overfitting.
     :param dataset_dir: A directory where the data set is saved. If not provided, it is assumed to be
         'dataset/preprocessed/' relative to this file's location.
     :returns: A DataLoader object with the dataset split specified loaded.
@@ -250,13 +275,28 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     image_dir = os.path.join(dataset_dir, f"images/{split}2017")
     caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
     caption_path = caption_path if include_captions else None
-    image_transforms = transforms.Compose([
-        transforms.ToTensor(),  # PIL → FloatTensor [0,1]
-        transforms.Normalize(  # From ImageNet sample statistics, standard normalizations
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
+
+    if add_augmentation is True:  # Add in data-augmentations
+        image_transforms = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            transforms.RandomGrayscale(p=0.1),
+            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225)
+            ),
+        ])
+
+    else:  # No data-augmentation, just convert to tensor and normalize
+        image_transforms = transforms.Compose([
+            transforms.ToTensor(),  # PIL → FloatTensor [0,1]
+            transforms.Normalize(  # From ImageNet sample statistics, standard normalizations
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
 
     # Load the vocab model to get the padding token id, should be 0 but it is safer to check
     vocab_model_path = os.path.join(dataset_dir, "vocab.model")
@@ -277,7 +317,7 @@ if __name__ == "__main__":
     # 0).  The steps below run a full data-set preprocessing pipeline of steps
     img_size = 224  # Process all the images to be a set size with H==W
     vocab_size = 10000  # How many sub-word tokens we will create in our vocab
-    max_tokens_per_caption = 100  # Limit how many total tokens we can have for each caption, this includes
+    max_tokens_per_caption = 50  # Limit how many total tokens we can have for each caption, this includes
     # the special start and end tokens appended to the front and back
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/")
 

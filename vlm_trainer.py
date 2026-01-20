@@ -7,13 +7,14 @@ import torch
 from tqdm.auto import tqdm
 from torch.optim import AdamW
 from typing import Tuple
-from utils import get_device, get_amp_dtype, decode_caption
+from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
+from utils import save_patch_grid
 import logging
 import psutil
 import pandas as pd
 from torch.utils.data import DataLoader
-from torch_models import VisionLanguageTransformer
-from torch.optim.lr_scheduler import SequentialLR, LinearLR
+from torch_models import VisionLanguageTransformer, MAEdecoder
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
 
 def infinite_loader(dataloader: DataLoader):
@@ -31,7 +32,7 @@ class TqdmLoggingHandler(logging.Handler):
         tqdm.write(msg)
 
 
-class Trainer:
+class TrainerCaptioning:
     def __init__(self, vlm: VisionLanguageTransformer, dataloader_train: DataLoader,
                  dataloader_val: DataLoader, lr_start: float = 1e-4, lr_end: float = 1e-5,
                  weight_decay: float = 1e-3, train_num_steps: int = 300000,
@@ -46,7 +47,8 @@ class Trainer:
         :param vlm: A vision-language model for captioning implemented in pytorch.
         :param dataloader_train: A data loader object that will yield the required training batches.
         :param dataloader_val: A data loader object that will yield the required validation batches.
-        :param lr: The training learning rate.
+        :param lr_start: The initial learning rate.
+        :param lr_end: The terminal training learning rate.
         :param weight_decay: The weight_decay to provide to the Adam optimizer for L2 regularization.
         :param train_num_steps: The number of training steps to run in total.
         :param adam_betas: Beta parameters for the adam optimizer.
@@ -95,7 +97,6 @@ class Trainer:
         self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
         self.amp_dtype = get_amp_dtype(self.device.type) if use_amp else None
         self.save_every = save_every  # The frequency of saving model weights
-        self.num_samples = 5  # The number of samples to generate periodically print
         self.sample_every = sample_every  # How often to generate samples
         self.train_num_steps = train_num_steps  # The total number of training steps
 
@@ -106,11 +107,11 @@ class Trainer:
         # Configure the optimizer for training
         self.opt = AdamW(self.vlm.parameters(), lr=lr_start, betas=adam_betas, weight_decay=weight_decay)
 
-        warmup_steps = 5000 # Slowly ramp up the learning rate from very low to peak
+        # Configure a learning rate schedule for training with warm-up
+        warmup_steps = int(train_num_steps * 0.01)  # Slowly ramp up the learning rate from very low to peak
         warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
-        # Linearly decay the learning rate during training
-        decay = LinearLR(self.opt,start_factor=1.0, end_factor=lr_end / lr_start,
-                         total_iters=train_num_steps - warmup_steps)
+        # Cosine annealing of the learning rate during the rest of training
+        decay = CosineAnnealingLR(self.opt, T_max=train_num_steps - warmup_steps)
         # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
         self.scheduler = SequentialLR(self.opt, schedulers=[warmup, decay], milestones=[warmup_steps])
 
@@ -167,7 +168,7 @@ class Trainer:
                 if torch.is_tensor(v):
                     state[k] = v.to(self.device)
 
-    def train(self, eps: float = 0.0, max_len: int = 75) -> None:
+    def train(self, eps: float = 0.0, max_len: int = 50) -> None:
         """
         Runs the training of the model until completion for self.train_num_steps total training iterations.
 
@@ -177,16 +178,17 @@ class Trainer:
             printed to show the model's progress.
         :returns: None. Caches the results to disk.
         """
-        self.logger.info(f"Starting Training, device={self.device}, amp_dtype={self.amp_dtype}")
+        self.logger.info(f"Starting Captions Training, device={self.device}, amp_dtype={self.amp_dtype}")
         for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and weight decay
             self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
-            break # Show for only the first parameter group, assume all are the same
+            break  # Show for only the first parameter group, assume all are the same
 
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
 
-        inf_dataloader_train = infinite_loader(self.dataloader_train)  # This does not cache batches
-        inf_dataloader_val = infinite_loader(self.dataloader_val)  # This does not cache batches
+        # These data-loaders do not cache batches which makes them more memory efficient
+        inf_dataloader_train = infinite_loader(self.dataloader_train)
+        inf_dataloader_val = infinite_loader(self.dataloader_val)
 
         if self.amp_dtype is not None:
             if self.device.type != 'cuda':
@@ -200,8 +202,8 @@ class Trainer:
             while self.step < self.train_num_steps:  # Run until all training iterations are complete
                 # Get the next training batch and move it to the same device as the model
                 batch = next(inf_dataloader_train)
-                images = batch["images"].to(self.device, non_blocking=True)
-                captions = batch["captions"].to(self.device, non_blocking=True)
+                images = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
+                captions = batch["captions"].to(self.device, non_blocking=True)  # (N, tgt_max_len)
 
                 self.opt.zero_grad(set_to_none=True)  # Zero the grads of the opt before computing the loss
                 # Compute the forward-pass through the model and compute a tensor that is the same shape
@@ -218,7 +220,7 @@ class Trainer:
                     scaler.scale(loss).backward()
                     if self.grad_clip is not None:
                         scaler.unscale_(self.opt)  # Unscale before clipping
-                        torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
                     scaler.step(self.opt)  # Update the model parameters by taking a gradient step
                     scaler.update()
                 else:
@@ -230,15 +232,7 @@ class Trainer:
                 pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{np.exp(loss.item()):.2f}",
                                  grad=f"{grad_norm:.3f}", logit_std=f"{outputs.std(dim=-1).mean():.3f}")
 
-                if self.step % 500 == 0:  # Periodically log the loss and other training metrics
-                    self.logger.info((f"loss={loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
-                                      f"grad={grad_norm:.3f}, logit_std={outputs.std(dim=-1).mean():.3f}"))
-                    gpu_mem_used = torch.cuda.memory_allocated() / 1e9
-                    cpu_mem_used = psutil.virtual_memory().used / 1e9
-                    msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
-                    self.logger.info(msg)
-
-                self.scheduler.step() # Update the learning rate scheduler
+                self.scheduler.step()  # Update the learning rate scheduler
 
                 # pbar.set_description(f"loss: {loss.item():.4f}, perplexity: {np.exp(loss.item()):.2f}")
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
@@ -254,11 +248,18 @@ class Trainer:
 
                 # Periodically generate samples from the model
                 if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
+                    # Periodically log the loss and other training metrics
+                    self.logger.info((f"loss={loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
+                                      f"grad={grad_norm:.3f}, logit_std={outputs.std(dim=-1).mean():.3f}"))
+                    gpu_mem_used = torch.cuda.memory_allocated() / 1e9
+                    cpu_mem_used = psutil.virtual_memory().used / 1e9
+                    msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
+                    self.logger.info(msg)
+
                     self.logger.info("\n")
                     self.logger.info(f"Generating samples at step={self.step}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
-                    images = batch["images"][:self.num_samples].to(self.device)
-                    captions = batch["captions"][:self.num_samples].to(self.device)
+                    images, captions = batch["images"].to(self.device), batch["captions"].to(self.device)
                     image_names = batch["image_names"]  # So that the corresponding images can be located
                     pred_captions = self.vlm.sample(images, max_len, True)  # (N, T)
                     actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
@@ -271,5 +272,315 @@ class Trainer:
                     self.vlm.train()  # Switch back to training mode once finished
 
                 del outputs, loss, images, captions
+
+                pbar.update(1)
+
+
+class TrainerMAE:
+    def __init__(self, vlm: VisionLanguageTransformer, decoder: MAEdecoder, dataloader_train: DataLoader,
+                 dataloader_val: DataLoader, lr_start: float = 5e-4, lr_end: float = 5e-5,
+                 weight_decay: float = 1e-3, train_num_steps: int = 300000,
+                 adam_betas: Tuple[float] = (0.9, 0.99), grad_clip: float = 1.0,
+                 sample_every: int = 500, save_every: int = 5000, results_folder: str = None,
+                 use_amp: bool = False, use_latest_checkpoint: bool = True):
+        """
+        A framewokr for pre-training a Vision-Language Model (VLT) on a MAE objective. This class wrapper has
+        methods for loading a model from a recent checkpoint, saving a model periodically during training,
+        and running a training loop to train from scratch or to continue from the last checkpoint.
+
+        :param vlm: A vision-language model for captioning implemented in pytorch.
+        :param decoder: A MAE decoder transformer model to create patch re-constructions.
+        :param dataloader_train: A data loader object that will yield the required training batches.
+        :param dataloader_val: A data loader object that will yield the required validation batches.
+        :param lr_start: The initial learning rate.
+        :param lr_end: The terminal training learning rate.
+        :param weight_decay: The weight_decay to provide to the Adam optimizer for L2 regularization.
+        :param train_num_steps: The number of training steps to run in total.
+        :param adam_betas: Beta parameters for the adam optimizer.
+        :param grad_clip: The amount of gradient clipping to use during training.
+        :param sample_every: An int denoting how often to sample and save outputs from the model.
+        :param save_every: An int denoting how often to save the model weights and losses.
+        :param results_folder: A location to save the results of training.
+        :param use_amp: Whether to use automatic mixed-precision type casting during training.
+        :param use_latest_checkpoint: If set to True, then the latest checkpoint detected in the results
+            directory will be loaded in before training begins to pick up from where it was last left off.
+        """
+        super().__init__()
+
+        assert results_folder is not None, "You must specify results folder to save the outputs"
+
+        self.results_folder = results_folder  # A directory where the checkpoints will be saved
+        self.checkpoints_folder = os.path.join(self.results_folder, "checkpoints/")
+        self.losses_folder = os.path.join(self.results_folder, "losses/")
+        self.samples_folder = os.path.join(self.results_folder, "samples/")
+        for directory in [self.results_folder, self.checkpoints_folder,
+                          self.losses_folder, self.samples_folder]:
+            os.makedirs(directory, exist_ok=True)  # Create the directory if not already there
+
+        # Set up logging during training
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.INFO)
+
+        if not self.logger.handlers:  # Prevent duplicate handlers
+            file_handler = logging.FileHandler(os.path.join(self.results_folder, "pretrain.log"),
+                                               encoding="utf-8")
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+            )
+            # file_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
+            self.logger.addHandler(file_handler)
+
+            tqdm_handler = TqdmLoggingHandler()
+            tqdm_handler.setFormatter(
+                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+            )
+            # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
+            self.logger.addHandler(tqdm_handler)
+        self.logger.propagate = False
+
+        self.vlm = vlm  # The vision-language model whose image encoder half will be trained
+        self.decoder = decoder  # The small transformer used for decoding and re-constructing masked patches
+        # Add up all the parameters of the image encoder half of the VLM that will be trained
+        n_params = sum(p.numel() for p in vlm.encoder.parameters())
+        n_params += vlm.img_pos_embed.numel() + vlm.cls_token.numel()
+        self.logger.info(f"Number of encoder model parameters: {n_params}")
+        n_params = sum(p.numel() for p in decoder.parameters())
+        self.logger.info(f"Number of decoder model parameters: {n_params}")
+
+        self.device = get_device()  # Auto-detect what device to use for training
+        self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
+        self.amp_dtype = get_amp_dtype(self.device.type) if use_amp else None
+        self.save_every = save_every  # The frequency of saving model weights
+        self.sample_every = sample_every  # How often to generate samples
+        self.train_num_steps = train_num_steps  # The total number of training steps
+
+        # Save a pointer to the train and validation dataloaders
+        self.dataloader_train = dataloader_train
+        self.dataloader_val = dataloader_val
+
+        # Configure the optimizers for training each model
+        self.opt_vlm = AdamW(self.vlm.parameters(), lr=lr_start, betas=adam_betas, weight_decay=weight_decay)
+        self.opt_decoder = AdamW(self.decoder.parameters(), lr=lr_start, betas=adam_betas,
+                                 weight_decay=weight_decay)
+
+        # Configure a learning rate schedule for training with warm-up
+        warmup_steps = int(train_num_steps * 0.01)  # Slowly ramp up the learning rate from very low to peak
+        warmup = LinearLR(self.opt_vlm, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
+        # Cosine annealing of the learning rate during the rest of training
+        decay = CosineAnnealingLR(self.opt_vlm, T_max=train_num_steps - warmup_steps)
+        # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
+        self.scheduler_vlm = SequentialLR(self.opt_vlm, schedulers=[warmup, decay], milestones=[warmup_steps])
+
+        # Configure a learning rate schedule for training with warm-up
+        warmup_steps = int(train_num_steps * 0.01)  # Slowly ramp up the learning rate from very low to peak
+        warmup = LinearLR(self.opt_decoder, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
+        # Cosine annealing of the learning rate during the rest of training
+        decay = CosineAnnealingLR(self.opt_decoder, T_max=train_num_steps - warmup_steps)
+        # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
+        self.scheduler_decoder = SequentialLR(self.opt_decoder, schedulers=[warmup, decay],
+                                              milestones=[warmup_steps])
+
+        self.step = 0  # Training step counter
+        self.all_losses = []  # Aggregate loss values during training
+
+        if use_latest_checkpoint:
+            checkpoints = os.listdir(self.checkpoints_folder)
+            if len(checkpoints) > 0:
+                last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
+                self.load(last_checkpoint)  # Load in the most recent milestone to continue training
+
+    def save(self, milestone: int) -> None:
+        """
+        Saves the weights of the model for the current milestone.
+
+        :param milestone: An integer denoting the training timestep at which the model weights were saved.
+        :returns: None. Writes the weights and losses to disk.
+        """
+        checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
+        self.logger.info(f"Saving model to {checkpoint_path}.")
+        data = {"step": self.step,
+                "vlm_model": self.vlm.state_dict(),
+                "decoder_model": self.decoder.state_dict(),
+                "opt_vlm": self.opt_vlm.state_dict(),
+                "opt_decoder": self.opt_decoder.state_dict(),
+                "scheduler_vlm": self.scheduler_vlm.state_dict(),
+                "scheduler_decoder": self.scheduler_decoder.state_dict(),
+                }
+        torch.save(data, checkpoint_path)
+        # Save down all the loss values produced by model training since the last caching
+        pd.Series(self.all_losses).to_csv(os.path.join(self.losses_folder, f"losses-{milestone}.csv"))
+
+    def load(self, milestone: int) -> None:
+        """
+        Loads in the cached weights from disk for a particular milestone.
+
+        :param milestone: An integer denoting the training timestep at which the model weights were saved.
+        :returns: None. Weights are loaded into the vlm model.
+        """
+        checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
+        self.logger.info(f"Loading model from {checkpoint_path}.")
+        checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
+
+        # Re-instate the training step counter, model weights, and optimizer state from the checkpoint data
+        # read in from disk
+        self.step = checkpoint_data["step"]
+        self.vlm.load_state_dict(checkpoint_data["vlm_model"])
+        self.decoder.load_state_dict(checkpoint_data["decoder_model"])
+        self.opt_vlm.load_state_dict(checkpoint_data["opt_vlm"])
+        self.opt_decoder.load_state_dict(checkpoint_data["opt_decoder"])
+        self.scheduler_vlm.load_state_dict(checkpoint_data["scheduler_vlm"])
+        self.scheduler_decoder.load_state_dict(checkpoint_data["scheduler_decoder"])
+        # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
+        # needed to continue training. The losses obtained by training will be cached again at the next save
+
+        # Move the model and the optimizer to the same device to continue training or for inference
+        for state in self.opt_vlm.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(self.device)
+
+        for state in self.opt_decoder.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(self.device)
+
+    def train(self, mask_ratio: float = 0.75) -> None:
+        """
+        Runs the MAE pre-training of the VLM model until completion for self.train_num_steps total training
+        iterations.
+
+        :param mask_ratio: The ratio of the image patches to randomly mask out during training.
+        :returns: None. Caches the results to disk.
+        """
+        self.logger.info(f"Starting MAE Training, device={self.device}, amp_dtype={self.amp_dtype}")
+        for i, param_group in enumerate(self.opt_vlm.param_groups):  # Report the learning rate and wt decay
+            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
+            break  # Show for only the first parameter group, assume all are the same
+
+        self.vlm.to(self.device)  # Move the model to the correct device
+        self.vlm.train()  # Make sure to set the model to train mode for training
+
+        self.decoder.to(self.device)  # Move the model to the correct device
+        self.decoder.train()  # Make sure to set the model to train mode for training
+
+        # These data-loaders do not cache batches which makes them more memory efficient
+        inf_dataloader_train = infinite_loader(self.dataloader_train)
+        inf_dataloader_val = infinite_loader(self.dataloader_val)
+
+        if self.amp_dtype is not None:
+            if self.device.type != 'cuda':
+                self.logger.info("AMP with FP16 requires CUDA")
+                self.amp_dtype = None
+            else:
+                scaler = torch.amp.GradScaler('cuda')
+
+        with tqdm(initial=self.step, total=self.train_num_steps) as pbar:
+
+            while self.step < self.train_num_steps:  # Run until all training iterations are complete
+                # Get the next training batch and move it to the same device as the models
+                batch = next(inf_dataloader_train)
+                imgs = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
+
+                # Zero the grads of the opt before computing the loss
+                self.opt_vlm.zero_grad(set_to_none=True)
+                self.opt_decoder.zero_grad(set_to_none=True)
+
+                # Compute the forward pass through the vlm encoder and the MAE decoder models
+                if self.amp_dtype is not None:
+                    with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                        x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
+                        pred_img, mask = self.decoder(x_vis_latent, mask, ids_restore)
+                        # Convert to image patches and normalize for the MSE obj (N, num_patches, patch_dim)
+                        norm_patches = normalize_patches(self.vlm.patch_embed.patchify(imgs))
+                        loss = ((pred_img - norm_patches) ** 2).mean(dim=-1)  # Avg per pixel squared loss
+                        loss = (loss * mask).sum() / mask.sum()  # Compute the MSE on the masked
+                else:
+                    x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
+                    pred_img, mask = self.decoder(x_vis_latent, mask, ids_restore)
+                    # Convert to image patches and normalize for the MSE obj (N, num_patches, patch_dim)
+                    norm_patches = normalize_patches(self.vlm.patch_embed.patchify(imgs))
+                    loss = ((pred_img - norm_patches) ** 2).mean(dim=-1)  # Avg per pixel squared loss
+                    loss = (loss * mask).sum() / mask.sum()  # Compute the MSE on the masked
+
+                if self.amp_dtype == torch.float16:
+                    scaler.scale(loss).backward()
+                    if self.grad_clip is not None:
+                        scaler.unscale_(self.opt_vlm)  # Unscale before clipping
+                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                    scaler.step(self.opt_vlm)  # Update the model parameters by taking a gradient step
+                    scaler.update()
+
+                    if self.grad_clip is not None:
+                        scaler.unscale_(self.opt_decoder)  # Unscale before clipping
+                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.decoder.parameters(),
+                                                                           self.grad_clip)
+                    scaler.step(self.opt_decoder)  # Update the model parameters by taking a gradient step
+                    scaler.update()
+
+                else:
+                    loss.backward()
+                    if self.grad_clip is not None:
+                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.decoder.parameters(),
+                                                                           self.grad_clip)
+                    # Update the model parameters by taking a gradient step
+                    self.opt_vlm.step()
+                    self.opt_decoder.step()
+
+                pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm_vlm=f"{grad_norm_vlm:.3f}",
+                                 grad_norm_decoder=f"{grad_norm_decoder:.3f}")
+
+                self.scheduler_vlm.step()  # Update the learning rate scheduler for the VLM
+                self.scheduler_decoder.step()  # Update the learning rate scheduler for the decoder model
+
+                self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
+                self.step += 1
+
+                # Periodically save the model weights to disk
+                if self.step % self.save_every == 0 or self.step == self.train_num_steps:
+                    self.save(self.step)
+                    self.all_losses = []  # Clear the list of losses after each save, store only the ones
+                    # from the last save to the next save
+                    torch.cuda.empty_cache()
+
+                # Periodically generate samples from the model and save them to disk
+                if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
+                    # Periodically log the loss and other training metrics
+                    self.logger.info((f"loss={loss.item():.4f}, grad_norm_vlm={grad_norm_vlm:.3f}, "
+                                      f"grad_norm_decoder={grad_norm_decoder:.3f}"))
+                    gpu_mem_used = torch.cuda.memory_allocated() / 1e9
+                    cpu_mem_used = psutil.virtual_memory().used / 1e9
+                    msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
+                    self.logger.info(msg)
+
+                    self.logger.info("\n")
+                    self.logger.info(f"Generating samples at step={self.step}")
+
+                    batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
+                    imgs = batch["images"].to(self.device, non_blocking=True)
+                    # Switch the models over to eval mode for decoding a few validation set samples
+                    self.vlm.eval()
+                    self.decoder.eval()
+
+                    x_vis_latent, mask, ids_restore = self.vlm.encode_mae(imgs, mask_ratio)
+                    # Generated decoded image reconstructions (N, num_patches, patch_dim)
+                    pred_imgs, mask = self.decoder(x_vis_latent, mask, ids_restore)
+                    img_patches = self.vlm.patch_embed.patchify(imgs) # (N, num_patches, patch_dim)
+                    pred_imgs = denormalize_patches(pred_imgs.detach(), img_patches)
+                    # Fill the unmasked image patchs with the actual image patch data
+                    pred_imgs = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
+
+                    ### TODO: Need to also un-normalize wrt to the ImageNet stuff as well
+                    # Save the values to an image grid periodically
+                    output_filepath = f"{os.path.join(self.samples_folder, str(self.step))}.png"
+                    grid_size = int(pred_imgs.shape[0] ** 0.5) # Should be a square grid
+                    save_patch_grid(pred_imgs, self.decoder.patch_size, grid_size=grid_size,
+                                    n_channels=3, filepath=output_filepath)
+
+                    # Switch the models back over to continue training
+                    self.vlm.train()
+                    self.decoder.train()
+
+                del imgs, x_vis_latent, mask, ids_restore, pred_img, loss
 
                 pbar.update(1)

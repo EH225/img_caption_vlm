@@ -4,7 +4,7 @@ This repository contains code for the Vision-Language Transformer Model for Imag
 - `dataset_utils.py`: This module contains utility functions for pre-processing the COCO dataset and for constructing dataloaders.
 - `torch_models.py`: This module contains all the components used to construct the Vision-Language Model (VLM) in pytorch.
 - `vlm_trainer.py`: This module contains a class that is used to run a training loop for the VLM and periodically cache results.
-- `run.py`: This module is used for putting together all the components mentioned above to run model training. n.py`.
+- `run.py`: This module is used for putting together all the components mentioned above to run model training.
 - `env_req`: This folder contains `environment.yml` which outlines the virtural environment configuration used to develop and run this project.
 
 This project leveraged materials from Stanford University's Deep Learning for Computer Vision ([XCS231N](https://cs231n.stanford.edu/)) course, with many modifications.

@@ -8,13 +8,62 @@ from torch.nn import functional as F
 import math
 import numpy as np
 import copy
-from utils import decode_caption
-from typing import List, Union
+from utils import decode_caption, normalize_patches
+from typing import List, Union, Tuple
+
+
+########################
+### Helper Functions ###
+########################
+# TODO: Section marker
 
 
 def clone(module: nn.Module, N: int):
     "Produces N identical layers of the input module."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
+
+
+def random_masking(x: torch.Tensor, mask_ratio: float = 0.75) -> Tuple[torch.Tensor]:
+    """
+    Helper function which randomly masks some ratio of the image patches in the input image embeddings.
+    Returns the reduced subset of visible image patch embeddings, a tensor denoting which image patches were
+    masked and a tensor denoting how to reverse the random shuffling of image patches to restore the original
+    image patch ordering. Note that x_visible has been shuffled.
+
+    :param x: An input batch of image patch embeddings of size (N, num_patches, embed_size).
+    :param mask_ratio: The proportion of image patches that should be randomly masked.
+    :returns:
+        - x_visible: A batch of visible image patches of size (N, num_visible, embed_size).
+        - mask: A tensor denoting which image patches were masked (encoded as 1s) of size (N, num_patches).
+        - ids_restore: A tensor denoting the reverse mapping of the shuffled image patch indices to restore
+            the original ordering. This can be used to re-construct the original image and tells us where the
+            patches of x_visible belong.
+    """
+    N, num_patches, embed_dim = x.shape  # Unpack the dimensions of the input
+    len_keep = int(num_patches * (1 - mask_ratio))  # Determine how many patches to keep i.e. not mask
+
+    noise = torch.rand(N, num_patches, device=x.device)  # Generate random noise values [0, 1], one for each
+    # image patch in each batch obs so that we can randomly sort the patches within each image (N, n_patches)
+
+    ids_shuffle = torch.argsort(noise, dim=1)  # Sort the random noise values generated above within each
+    # image to get a random shuffle of the image patches within each image (N, n_patches), this is a tensor
+    # of image patch indices for each image i.e. [0, num_patches - 1]
+    ids_restore = torch.argsort(ids_shuffle, dim=1)  # This gives us the reverse mapping i.e. how to index
+    # ids_shuffle to obtain the original ordering (N, n_patches) e.g. the location of 0 in ids_shuffle[i, :]
+    # is where the first image patch will be in the shuffled set of the ith image
+
+    ids_keep = ids_shuffle[:, :len_keep]  # Randomly select which image patches to keep (N, len_keep)
+    # Extract out the image patches for each image to keep i.e. the ones that will be visible to the encoder
+    # to get a shuffled batch of image patches of size (N, len_keep, embed_dim)
+    x_visible = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, embed_dim))
+
+    mask = torch.ones(N, num_patches, device=x.device)  # (N, num_patches) Start off with all ones
+    mask[:, :len_keep] = 0  # Use zeros to denote where the masking took place
+    mask = torch.gather(mask, dim=1, index=ids_restore)  # Re-arrange the masking values to reflect which of
+    # the original image patches were masked (N, num_patches)
+
+    # (N, n_vis, embed_dim), (N, num_patches), (N, num_patches)
+    return x_visible, mask, ids_restore
 
 
 ##############################
@@ -192,13 +241,27 @@ class PatchEmbedding(nn.Module):
         self.patch_dim = patch_size * patch_size * in_channels
 
         # For extracting out the image patches
-        self.img_patch_conv2d = nn.Conv2d(in_channels=in_channels, out_channels=embed_dim,
-                                          kernel_size=patch_size, stride=patch_size)
+        C, P = in_channels, patch_size  # Input channels, pixel size of each patch side
+        patch_dim = C * P * P  # The number of pixels in each patch (length when flattened)
+        self.img_patch_conv2d = nn.Conv2d(in_channels=C, out_channels=patch_dim,
+                                          kernel_size=P, stride=P, bias=False)
 
-    #     # A final linear projection layer applied to flattened patches to convert them to the embed_dim
-    #     self.proj = nn.Linear(self.patch_dim, embed_dim)
+        # Initialize weights to extract patches, create an identity function using conv2d to create patches
+        with torch.no_grad():
+            self.img_patch_conv2d.weight.zero_()  # Start with all zeros and then selectively add 1s
+            out_idx = torch.arange(patch_dim)  # Values [0, 1, 2, ... patch_dim - 1]
+            c_idx = out_idx // (P * P)  # Channel index values [0, 0, ... 1, 1, ..., 2, 2]
+            # Which patch each idx belongs to:
+            # [0, ... n_patches-1, 0, ..., n_patches - 1, 0, ..., n_patches - 1]
+            idx_in_patch = out_idx % (P * P)
+            i_idx = idx_in_patch // P  # Row
+            j_idx = idx_in_patch % P  # Col
+            self.img_patch_conv2d.weight[out_idx, c_idx, i_idx, j_idx] = 1.0
 
-    # def forward_legacy(self, x: torch.Tensor) -> torch.Tensor:
+        # A final linear projection layer applied to flattened patches to convert them to the embed_dim
+        self.proj = nn.Linear(self.patch_dim, embed_dim)
+
+    # def patchify_legacy(self, x: torch.Tensor) -> torch.Tensor:
     #     """
     #     LEGACY VERSION - NOT USED IN PRODUCTION
     #     Computes a forward pass for each image in the input batch and converts them into a set of image patch
@@ -218,11 +281,30 @@ class PatchEmbedding(nn.Module):
     #     # E.g. patches.shape = ([2, 3, 2, 2, 8, 8]) 2 images, 3 channels, 2 + 2 = 4 patches, 8x8 patch size
     #     patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(N, -1, C, self.patch_size, self.patch_size)
     #     # E.g. patches.shape = ([2, 4, 3, 8, 8]) 2 images, 4 patches, 3 channels, 8x8 patch size
-    #     # Flatten and pass through the final projection layer to turn these into embedding vectors
-    #     patch_embeddings = self.proj(torch.flatten(patches, start_dim=2))
-    #     return patch_embeddings
+    #     return patches = torch.flatten(patches, start_dim=2)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def patchify(self, imgs: torch.Tensor) -> torch.Tensor:
+        """
+        Converts a batch of input images (imgs of size (N, C, H, W)) into image patches for each obs of size
+        (N, num_patches, patch_size * patch_size * in_channels)
+
+        :param x: An input image tensor of shape (N, C, H, W) where H == W, square images.
+        :returns: A collection of image patches for each image of size (N, num_patches, P * P * C) where
+            num_patches is equal to (img_size // patch_size) ** 2. Patches are tiled from top left to bottom
+            right.
+        """
+        N, C, H, W = imgs.shape
+        msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
+        assert H == self.img_size and W == self.img_size, msg
+        # Divide the image into non-overlapping patches of size (patch_size x patch_size x c)
+        # (N, C, H, W) -> (N, num_patches, C, patch_size, patch_size)
+        # E.g. x.shape = ([2, 3, 16, 16]) 2 images, 3 channels, each img is 16 x 16
+        x = self.img_patch_conv2d(imgs)  # (N, P*P*C, H/P=patch_size, W/P=patch_size)
+        # patch_dim = P * P * C = patch_size * patch_size * in_channels
+        patches = x.flatten(start_dim=2).transpose(1, 2)  # (N, num_patches, patch_dim)
+        return patches  # (N, num_patches, patch_dim)
+
+    def forward(self, imgs: torch.Tensor) -> torch.Tensor:
         """
         Computes a forward pass for each image in the input batch and converts them into a set of image patch
         embeddings i.e. (N, C, H, W) -> (N, num_patches, embed_dim)
@@ -231,15 +313,7 @@ class PatchEmbedding(nn.Module):
         :returns: A patch embedding tensor of shape (N, num_patches, embed_dim) where num_patches is equal to
             (img_size // patch_size) ** 2. Patches are tiled from top left to bottom right.
         """
-        N, C, H, W = x.shape
-        msg = f"Expected image size ({self.img_size}, {self.img_size}), but got ({H}, {W})"
-        assert H == self.img_size and W == self.img_size, msg
-        # Divide the image into non-overlapping patches of size (patch_size x patch_size x c)
-        # (N, C, H, W) -> (N, num_patches, C, patch_size, patch_size)
-        # E.g. x.shape = ([2, 3, 16, 16]) 2 images, 3 channels, each img 16 x 16
-        x = self.img_patch_conv2d(x)  # (N, embed_dim, H/P=patch_size, W/P=patch_size)
-        patch_embeddings = x.flatten(start_dim=2).transpose(1, 2)  # (N, num_patches, embed_dim)
-        return patch_embeddings
+        return self.proj(self.patchify(imgs))
 
 
 class PositionalEmbedding(nn.Module):
@@ -313,36 +387,35 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = MultiHeadedAttention(embed_dim, num_heads, dropout)
         self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, dropout)
 
-        self.norm_self = nn.LayerNorm(embed_dim)
+        self.norm_self_attn = nn.LayerNorm(embed_dim)
         self.norm_ffn = nn.LayerNorm(embed_dim)
 
-        self.dropout_self = nn.Dropout(dropout)
+        self.dropout_self_attn = nn.Dropout(dropout)
         self.dropout_ffn = nn.Dropout(dropout)
 
     def forward(self, src: torch.Tensor, src_mask: torch.Tensor = None) -> torch.Tensor:
         """
-        Computes a forward pass through the encoder layer of the src input and src_mask.
+        Computes a forward pass through the encoder layer for the src input, where full bi-directional self
+        attention is applied to all tokens. No masking is used, all tokens attend to all others.
 
         :param src: The sequence input to the encoder layer of shape (N, S, E).
-        :param src_mask: Masks out parts of the source sequence which should not be attended to by earlier
-            token embeddings within the target sequence, of shape (S, S).
         :returns: A sequence of transformed features of shape (N, S, E).
         """
-        # Self-attention sub-block (reference implementation)
-        shortcut = src  # Record for the residual connection below
-        src = self.self_attn(query=src, key=src, value=src, attn_mask=src_mask)
-        src = self.dropout_self(src)
-        src = src + shortcut  # Residual connection
-        src = self.norm_self(src)
+        x = src  # Name change for typical naming conventions
+
+        # Self-attention sub-block
+        residual = x  # Record for the residual connection below
+        src = self.norm_self_attn(x)  # Use layer norm pre-processing
+        x = self.self_attn(query=x, key=x, value=x, attn_mask=None)
+        x = self.dropout_self_attn(x)
+        x = x + residual  # Residual connection
 
         # Add a feed-forward block sub-block
-        shortcut = src  # Record for the residual connection below
-        src = self.ffn(src)
-        src = self.dropout_ffn(src)
-        src = src + shortcut  # Residual connection
-        src = self.norm_ffn(src)
-
-        return src
+        residual = x  # Record for the residual connection below
+        x = self.ffn(self.norm_ffn(x))
+        x = self.dropout_ffn(x)
+        x = x + residual  # Residual connection
+        return x
 
 
 class TransformerEncoder(nn.Module):
@@ -363,18 +436,17 @@ class TransformerEncoder(nn.Module):
         self.layers = clone(encoder_layer, num_layers)
         self.num_layers = num_layers
 
-    def forward(self, src: torch.Tensor, src_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
         """
-        Computes a forward pass through all layers of the encoder transformer.
+        Computes a forward pass through all layers of the encoder transformer where full bi-directional self
+        attention is applied to all tokens. No masking is used, all tokens attend to all others.
 
         :param src: The sequence input to the encoder layer of shape (N, S, E).
-        :param src_mask: Masks out parts of the source sequence which should not be attended to by earlier
-            token embeddings within the target sequence, of shape (S, S).
         :returns: A sequence of transformed features of shape (N, S, E).
         """
-        x = src
+        x = src  # Name change for typical naming conventions
         for layer in self.layers:
-            x = layer(x, src_mask=src_mask)
+            x = layer(x)
         return x
 
 
@@ -398,12 +470,12 @@ class TransformerDecoderLayer(nn.Module):
         self.cross_attn = MultiHeadedAttention(embed_dim, num_heads, dropout)
         self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, dropout)
 
-        self.norm_self = nn.LayerNorm(embed_dim)
-        self.norm_cross = nn.LayerNorm(embed_dim)
+        self.norm_self_attn = nn.LayerNorm(embed_dim)
+        self.norm_cross_attn = nn.LayerNorm(embed_dim)
         self.norm_ffn = nn.LayerNorm(embed_dim)
 
-        self.dropout_self = nn.Dropout(dropout)
-        self.dropout_cross = nn.Dropout(dropout)
+        self.dropout_self_attn = nn.Dropout(dropout)
+        self.dropout_cross_attn = nn.Dropout(dropout)
         self.dropout_ffn = nn.Dropout(dropout)
 
     def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None) -> torch.Tensor:
@@ -416,29 +488,30 @@ class TransformerDecoderLayer(nn.Module):
             token embeddings within the target sequence.
         :returns: A sequence of transformed features of shape (N, T, E).
         """
+        x = tgt  # Name change for typical naming conventions
+
         # Self-attention sub-block
-        resid_conn = tgt  # Record for the residual connection below
-        tgt = self.self_attn(query=tgt, key=tgt, value=tgt, attn_mask=tgt_mask)
-        tgt = self.dropout_self(tgt)
-        tgt = tgt + resid_conn  # Residual connection
-        tgt = self.norm_self(tgt)
+        residual = x  # Record for the residual connection below
+        x = self.norm_self_attn(x)
+        x = self.self_attn(query=x, key=x, value=x, attn_mask=tgt_mask)
+        x = self.dropout_self_attn(x)
+        x = x + residual  # Residual connection
 
         # Add a cross-attention sub-block using the encoder output (memory) as the key and value vectors,
         # there is no attention mask here since all input encoder values are visible to all decoder timesteps
-        resid_conn = tgt  # Record for the residual connection below
-        tgt = self.cross_attn(query=tgt, key=memory, value=memory, attn_mask=None)
-        tgt = self.dropout_cross(tgt)
-        tgt = tgt + resid_conn  # Residual connection
-        tgt = self.norm_cross(tgt)
+        residual = x  # Record for the residual connection below
+        x = self.norm_cross_attn(x)
+        x = self.cross_attn(query=x, key=memory, value=memory, attn_mask=None)
+        x = self.dropout_cross_attn(x)
+        x = x + residual  # Residual connection
 
         # Add a feed-forward block sub-block
-        resid_conn = tgt  # Record for the residual connection below
-        tgt = self.ffn(tgt)
-        tgt = self.dropout_ffn(tgt)
-        tgt = tgt + resid_conn  # Residual connection
-        tgt = self.norm_ffn(tgt)
+        residual = x  # Record for the residual connection below
+        x = self.ffn(self.norm_ffn(x))
+        x = self.dropout_ffn(x)
+        x = x + residual  # Residual connection
 
-        return tgt  # (N, T, E)
+        return x  # (N, T, E)
 
 
 class TransformerDecoder(nn.Module):
@@ -474,6 +547,115 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             x = layer(x, memory, tgt_mask=tgt_mask)
         return x
+
+
+######################################
+### MAE Pre-Training Decoder Model ###
+######################################
+# TODO: Section marker
+
+class MAEdecoder(nn.Module):
+    """
+    A Masked Autoencoder (MAE) decoder model for MAE pre-training of the Vision-Language Transformer image
+    encoder.
+
+    Self-supervised pre-training can be used to strengthen the image encoder part of the VLM before
+    end-to-end training for image captioning in order to increase overall performance of the model. Using an
+    image encoder with strong latent representations of image patches is important before adding a language
+    model decoder, otherwise it can be easy to overfit and hard to train both transformer models at the same
+    time.
+
+    Masked auto-encoding is a self-supervised training objective where input images are patchified and a
+    random subset (e.g. 75%) and masked. The unmasked, visible image patches are passed through the image
+    encoder (the vision transformer) and then passed to a small decoder transformer (this model) which uses
+    the latent representations of the visible image patches from the encoder to re-construct the masked image
+    patches. This reqires the image encoder to learn right latent representations and global image structure
+    without labels. It is an efficient and effective technique for down-stream task such as image captioning.
+    """
+
+    def __init__(self, img_size: int = 224, patch_size: int = 16, in_channels: int = 3, embed_dim: int = 512,
+                 num_layers: int = 3, num_heads: int = 6, ffn_dim: int = 256, dropout: float = 0.1):
+        """
+        Initializes a Masked Autoencoder decoder model which attempts to re-construct image patches that have been
+        masked to create a self-supervised training objective to pre-train the vision-transformer image encoder.
+
+        :param img_size: An integer representing the height & width of input image (assumes square image).
+        :param patch_size: An integer representing height & width of each patch (square patch).
+        :param in_channels: The number of input image channels (e.g. 3 for RGB).
+        :param embed_dim: The dimension of the linear embedding space i.e. the size of the embedding vectors
+            each image patch is turned into.
+        :param num_layers: The number of encoder layers to sequentially stack.
+        :param num_heads: The number of attention heads to use when computing attention outputs.
+        :param ffn_dim: The size of the hidden layer in the feed-forward neural network. Generally set to be
+            2x or 4x the embed_dim.
+        :param dropout: The probability of dropout used during training.
+        """
+        super().__init__()
+        # 0). Record input parameters
+        self.img_size = img_size  # The size of input images, H == W, images are assumed to be square
+        self.patch_size = patch_size  # The size of each patch, H == W, patches are square
+        self.in_channels = in_channels  # The number of input image color channels
+        self.patch_dim = patch_size * patch_size * in_channels  # The number of pixels per patch
+        self.num_patches = (img_size // patch_size) ** 2  # The number of patches in the image patch grid
+        self.embed_dim = embed_dim  # The size of the image patch and word embeddings
+        self.num_layers = num_layers  # The number of transformer blocks in the encoder and decoder
+        self.num_heads = num_heads  # The number of attention heads
+        self.ffn_dim = ffn_dim  # Size of the hidden layer of the feed-forward neural nets
+        self.dropout = dropout  # Dropout probability used during training
+
+        # Add learnable positional embeddings for the image patches relative to one another
+        self.img_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
+
+        # Initialize a mask token as a vector of learnable parameters which will be used during decoding, we will
+        # concat copies of this token with the visible token ouputs from the encoder to get a full set of image
+        # patches, then posiitonal embeddings will be added and the full set of image patch tokens passed through
+        # the decoder model to predict reconstructions of the masked image patches
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))  # (1, 1, embed_dim)
+        nn.init.normal_(self.mask_token, std=0.02)
+
+        # Use a shallow decoder transformer model that uses full bidirectional self-attention across all tokens
+        # to re-constructed the masked image patches, this model will take in (N, num_patches, embed_dim) and
+        # output a tensor of the same size after applying the transformer operations
+        decoder_layer = TransformerEncoderLayer(embed_dim, num_heads, ffn_dim, dropout)
+        self.decoder = TransformerEncoder(decoder_layer, num_layers)
+        # A final projection layer to map the embed_dim latent representations of the masked image patches into
+        # pixels i.e. (N, num_patches, embed_dim) -> (N, num_patches, patch_dim)
+        self.patch_proj = nn.Linear(self.embed_dim, self.patch_dim)
+
+    def forward(self, x_vis_latent: torch.Tensor, mask: torch.Tensor,
+                ids_restore: torch.Tensor) -> torch.Tensor:
+        """
+        Computes a forward pass through the MAE decoder model which seeks to re-construct the pixel values of the
+        masked image patches using the encoder outputs from the VLM model.
+
+        :param x_vis_latent: A batch of deep latent representations of visible (unmasked) image pathces of size
+            (N, num_patches_vis, embed_dim) which does not include the CLS token.
+        :param mask: A tensor of size (N, num_patches) which records which image patches were masked with a 1.
+        :param ids_restore: A tensor of size (N, num_patches) which records the original ordering of the image
+            patches for re-construction since x_vis_latent is shuffled and only contains the visible ones.
+        :returns:
+            - out: A tensor of size (N, num_patches, patch_dim) containing the pixels of the fully reconstructed
+                image where patch_dim = patch_size * patch_size * in_channels and denotes the number of pixels in
+                each image patch.
+            - mask: A tensor of size (N, num_patches) which records which image patches were masked with a 1.
+        """
+        N, num_patches, embed_dim = x_vis_latent.shape  # Get the batch size
+        msg = f"num_patches expected to be <= {self.num_patches}, but got {num_patches}"
+        assert num_patches <= self.num_patches, msg
+        msg = f"num_patches expected to be {self.embed_dim}, but got {embed_dim}"
+        assert embed_dim == self.embed_dim, msg
+        mask_tokens = self.mask_token.repeat(N, mask.sum(1).max().int(),
+                                             1)  # (N, num_patches_masked, embed_dim)
+        # Combined the visible tokens with the mask tokens to create a full set of tokens for the decoder
+        x_full = torch.cat([x_vis_latent, mask_tokens], dim=1)  # (N, num_patches, embed_dim)
+        # However, all the visible tokens are at the front and all the masked ones are in the back, restore the
+        # original ordering of the tokens by using ids_restore to unshuffle them (N, num_patches, embed_dim)
+        x_full = torch.gather(x_full, dim=1,
+                              index=ids_restore.unsqueeze(-1).expand(-1, -1, self.embed_dim))
+        x_full = x_full + self.img_pos_embed  # Add positional encodings to all image patch tokens
+        # Then pass the full set of image patch tokens through the decoder model and project to pixels
+        out = self.patch_proj(self.decoder(x_full))  # (N, num_patches, patch_dim), patch_dim = P * P * C
+        return out, mask  # (N, num_patches, patch_dim), (N, num_patches) with 1s denoting the masked img patches
 
 
 ###############################################
@@ -541,8 +723,10 @@ class VisionLanguageTransformer(nn.Module):
         # A patch embedding layer to convert input images into patch embedding vectors
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
         self.num_patches = self.patch_embed.num_patches
-        # A positional embedding layer for the image patches and their locations relative to one another
-        self.img_pos_embed = PositionalEmbedding(embed_dim, dropout, self.num_patches)
+        # Add learnable positional embeddings for the image patches relative to one another, +1 for CLS
+        self.img_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))  # Add a CLS token for global semantics
+        # of size (N=1, n_patches=1, E) to concat with the image patches of size (N, n_patches, E)
         # Construct the vision transformer encoder with self-attention to generate rich image patch embeddings
         encoder_layer = TransformerEncoderLayer(embed_dim, num_heads, ffn_dim, dropout)
         self.encoder = TransformerEncoder(encoder_layer, num_layers)
@@ -584,6 +768,55 @@ class VisionLanguageTransformer(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
+    def encode_mae(self, imgs: torch.Tensor, mask_ratio: float = 0.75) -> Tuple[torch.Tensor]:
+        """
+        Passes a batch of input images (N, C, H, W) through the vision transformer for MAE pre-training.
+        The input images are split into non-overlapping patches, normalized, converted to patch embeddings,
+        randomly masked, given positional embeddings, and then passed through the encoder model. The deep
+        latent representations of the image patches, the masked image patch indices, and the indices to
+        restore the origina image patch ordering are output and can be passed directly into the MAE decoder.
+
+        :param imgs: A batch of input images of size (N, C, H, W) to be encoded into deep latent
+            representations by the vision transformer.
+        :param mask_ratio: The ratio of the image patches to randomly mask out.
+        :returns:
+            - x_vis_latent: A batch of deep latent representations of visible (unmasked) image pathces of size
+                (N, num_patches_vis, embed_dim) which does not include the CLS token.
+            - mask: A tensor of size (N, num_patches) which records which image patches were masked with a 1.
+            - ids_restore: A tensor of size (N, num_patches) which records the original ordering of the image
+                patches for re-construction since x_vis_latent is shuffled and only contains the visible ones.
+        """
+        # 1). Segment the images into image patches and apply per patch normalizations
+        patches = normalize_patches(self.patch_embed.patchify(imgs))  # (N, num_patches, patch_dim)
+
+        # 2). Apply the linear projection to convert the patch pixels into patch embeddings
+        patch_embeddings = self.patch_embed.proj(patches)  # (N, num_patches, embed_dim)
+
+        # 3). Apply random masking to the image patches, 1s in the mask tensor denote which were masked
+        x_vis, mask, ids_restore = random_masking(patch_embeddings, mask_ratio)
+
+        # 4). Add positional encodings to retain spatial information
+        N, num_patches_vis, embed_dim = x_vis.shape
+        # img_pos_embed is (1, num_patches + 1, embed_dim) with the first positional embedding at index 0 for
+        # the special CLS token so we will add 1 to all the ids_restore values to convert them into the
+        # correct image embedding indices (N, num_patches_vis, embed_dim)
+        idx = ids_restore[:, :num_patches_vis].unsqueeze(-1).expand(-1, -1, embed_dim) + 1
+        # Expand to match the batch dim (1, num_patches + 1, embed_dim) -> (N, num_patches + 1, embed_dim)
+        pos_embed = self.img_pos_embed.expand(idx.size(0), -1, -1)
+        pos_embed_vis = torch.gather(pos_embed, dim=1, index=idx)
+        x_vis = x_vis + pos_embed_vis  # Add the learned positional encodings to the visible image patches
+
+        # 5). Add a CLS token for capturing global semantics
+        cls_embed = self.cls_token + self.img_pos_embed[:, 0]  # Add the CLS positional encoding
+        x_vis = torch.concat([cls_embed.expand(N, 1, embed_dim), x_vis], dim=1)
+
+        # 6). Pass the visible image patch tokens through the vision-transformer encoder
+        x_vis_latent = self.encoder(x_vis)  # (N, num_patches_vis + 1, embed_dim)
+        # Drop the CLS token for the decoder, which shouldn't use it
+        x_vis_latent = x_vis_latent[:, 1:, :]  # (N, num_patches_vis + 1, E) -> (N, num_patches_vis, E)
+
+        return x_vis_latent, mask, ids_restore
+
     def encode(self, imgs: torch.Tensor) -> torch.Tensor:
         """
         Passes a batch of input images (N, C, H, W) into the vision transformer which is an encoder that
@@ -597,13 +830,17 @@ class VisionLanguageTransformer(nn.Module):
         # 1). Convert the input image into a sequence of patch vectors
         patch_embeddings = self.patch_embed(imgs)  # (N, num_patches, embed_dim)
 
-        # 2). Add positional encodings to retain spatial information
-        patch_embeddings = self.img_pos_embed(patch_embeddings)  # (N, num_patches, embed_dim)
+        # 2). Add a CLS token for capturing global semantics
+        N, n_patches, embed_dim = patch_embeddings.shape
+        patch_embeddings = torch.concat([self.cls_token.expand(N, 1, embed_dim), patch_embeddings], dim=1)
 
-        # 3). Pass the sequence through the vision-transformer encoder
-        x = self.encoder(patch_embeddings, None)  # (N, num_patches, embed_dim)
+        # 3). Add positional encodings to retain spatial information
+        patch_embeddings += self.img_pos_embed  # (N, num_patches + 1, embed_dim), broadcasts along dim=0
 
-        return x  # (N, num_patches, embed_dim)
+        # 4). Pass the sequence through the vision-transformer encoder
+        x = self.encoder(patch_embeddings)  # (N, num_patches + 1, embed_dim)
+
+        return x  # (N, num_patches + 1, embed_dim)
 
     def decode(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
         """
@@ -649,6 +886,7 @@ class VisionLanguageTransformer(nn.Module):
         # 6). Map the transformer outputs to the vocab dim for a final word prediction at each time step
         # (batch_size, T, embed_dim) @ (embed_dim, vocab_size) = (batch_size, T, vocab_size)
         logit_scores = self.vocab_proj(x)
+
         return logit_scores  # (N, T, V) decoder_outputs
 
     def forward(self, imgs: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
