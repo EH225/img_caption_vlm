@@ -179,7 +179,7 @@ if __name__ == "__main__":
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },
             "DataLoaderVal": {
-                "batch_size": 9,
+                "batch_size": 4,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
             },

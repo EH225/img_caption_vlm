@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 from torch.optim import AdamW
 from typing import Tuple
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import save_patch_grid, denormalize_imagenet
+from utils import save_patch_grid, plot_and_save_loss
 import logging
 import psutil
 import pandas as pd
@@ -295,6 +295,7 @@ class TrainerMAE:
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
                     self.save(self.step)
+                    plot_and_save_loss(self.losses_folder) # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
                     torch.cuda.empty_cache()
@@ -597,6 +598,7 @@ class TrainerCaptioning:
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
                     self.save(self.step)
+                    plot_and_save_loss(self.losses_folder) # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
                     torch.cuda.empty_cache()

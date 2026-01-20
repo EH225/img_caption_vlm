@@ -1,11 +1,12 @@
 """
 This module contains general utility functions used throughout the repo.
 """
-import torch
+import torch, os
 import numpy as np
+import pandas as pd
 from typing import List, Union
 from torchvision.utils import save_image
-
+import matplotlib.pyplot as plt
 
 def get_device():
     """
@@ -126,4 +127,30 @@ def save_patch_grid(images: torch.Tensor, patch_size: int, filepath: str) -> Non
     # Reverse the ImageNet standard transforms so that they are back in the original colors
     img_grid = denormalize_imagenet(img_grid.view(N, C, H * patch_size, W * patch_size))
     save_image(img_grid, filepath, nrow=4)
+
+def plot_and_save_loss(loss_dir: str) -> None:
+    """
+    Combines all the data cached to a directory of loss value outputs and combines them together to create a
+    loss plot which is then saved down in the same directory as well.
+
+    :param loss_dir: A directory containing losses-{milestone}.csv files.
+    :returns: None, generates a plot that is then saved to disk.
+    """
+    filenames = [x for x in os.listdir(loss_dir) if x.startswith("losses") and x.endswith(".csv")]
+    if len(filenames) > 0: # Otherwise do nothing
+        all_losses = []
+        milestones = [int(x.replace("losses-", "").replace(".csv", "")) for x in filenames]
+        for m in sorted(milestones):
+            df = pd.read_csv(os.path.join(loss_dir, f"losses-{m}.csv"), index_col=0)
+            all_losses.extend(df.iloc[:, 0].tolist())
+        all_losses = pd.Series(all_losses) # Convert to a pd.Series for ease of use
+        all_losses.index += 1 # Set the index to begin at 1
+        # Create a plot and save it to the same directory
+        plt.figure(figsize=(10, 3))
+        plt.plot(all_losses, zorder=3)
+        plt.ylabel("Loss")
+        plt.xlabel("Training Step")
+        plt.title("Training Loss")
+        plt.grid(color="lightgray", zorder=-3)
+        plt.savefig(os.path.join(loss_dir, "training_loss.png"), dpi=300, bbox_inches='tight')
 
