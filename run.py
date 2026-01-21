@@ -75,7 +75,6 @@ def train_captioning_model(config: Dict) -> None:
     if pretrained_wts_dir is not None:
         pretrained_wts_dir = os.path.join(pretrained_wts_dir, "checkpoints")
         if os.path.exists(pretrained_wts_dir):
-            print(os.listdir(pretrained_wts_dir))
             milestones = [int(x.replace("model-", "").replace(".pt", ""))
                           for x in os.listdir(pretrained_wts_dir)]
             if len(milestones) > 0:
@@ -130,7 +129,7 @@ if __name__ == "__main__":
                 "lr_start": 1e-4,
                 "lr_end": 1e-5,
                 "weight_decay": 5e-3,
-                "train_num_steps": 500,
+                "train_num_steps": 100,
                 "grad_clip": 1.0,
                 "sample_every": 5,
                 "save_every": 10,
@@ -209,5 +208,5 @@ if __name__ == "__main__":
             },
         }
 
-    pre_train_mae(config)  # Run model pre-training
-    # train_captioning_model(config)  # Run model training
+    # pre_train_mae(config)  # Run model pre-training
+    train_captioning_model(config)  # Run model training
