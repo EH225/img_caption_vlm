@@ -33,9 +33,9 @@ def pre_train_mae(config: dict) -> None:
     decoder = MAEdecoder(**config.get("MAEdecoder", {}))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
-    dataloader_train = get_dataloader(split='train', add_augmentation=True,
+    dataloader_train = get_dataloader(split='train', include_captions=True,
                                       **config.get("DataLoaderTrain", {}))
-    dataloader_val = get_dataloader(split='val', include_captions=False, add_augmentation=False,
+    dataloader_val = get_dataloader(split='val', include_captions=False,
                                     **config.get("DataLoaderVal", {}))
 
     # 4). Configure the training pipeline with the trainer object
@@ -62,9 +62,9 @@ def train_captioning_model(config: Dict) -> None:
     vlm = VisionLanguageTransformer(sp_model=sp_model, **config.get("VisionLanguageTransformer", {}))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
-    dataloader_train = get_dataloader(split='train', add_augmentation=True,
+    dataloader_train = get_dataloader(split='train', include_captions=True,
                                       **config.get("DataLoaderTrain", {}))
-    dataloader_val = get_dataloader(split='val', add_augmentation=False,
+    dataloader_val = get_dataloader(split='val', include_captions=True,
                                     **config.get("DataLoaderVal", {}))
 
     # 4). Configure the training pipeline with the trainer object
@@ -119,11 +119,13 @@ if __name__ == "__main__":
                 "batch_size": 32,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
+                "add_augmentation": True,
             },
             "DataLoaderVal": {
                 "batch_size": 4,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
+                "add_augmentation": False,
             },
             "TrainerMAE": {
                 "lr_start": 1e-4,
@@ -150,6 +152,7 @@ if __name__ == "__main__":
                 "use_latest_checkpoint": True,
             },
         }
+
     else:  # Set up a config for prod training, set parameters for each component
         config = {
             "VisionLanguageTransformer": {
@@ -176,11 +179,13 @@ if __name__ == "__main__":
                 "batch_size": 32,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
+                "add_augmentation": True,
             },
             "DataLoaderVal": {
                 "batch_size": 4,
                 "device": get_device().type,
                 "dataset_dir": f"{CURRENT_DIR}/dataset/preprocessed/",
+                "add_augmentation": False,
             },
             "TrainerMAE": {
                 "lr_start": 1e-4,
