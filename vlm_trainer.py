@@ -472,8 +472,8 @@ class TrainerCaptioning:
                                   for x in os.listdir(pretrained_wts_dir)]
                     if len(milestones) > 0:
                         max_milestone = max(milestones)
-            if max_milestone is not None: # Load in the latest pre-trained weights
-                self.load_pretrained(max_milestone)
+                if max_milestone is not None: # Load in the latest pre-trained weights
+                    self.load_pretrained(max_milestone)
 
     def save(self, milestone: int) -> None:
         """
