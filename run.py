@@ -89,7 +89,7 @@ if __name__ == "__main__":
                 "embed_dim": 64,
                 "num_layers": 2,
                 "num_heads": 2,
-                "ffn_dim": 64 * 2,
+                "ffn_dim": 64 * 4,
                 "dropout": 0.1,
             },
             "MAEdecoder": {
@@ -99,7 +99,7 @@ if __name__ == "__main__":
                 "embed_dim": 64,
                 "num_layers": 1,
                 "num_heads": 2,
-                "ffn_dim": 64 * 2,
+                "ffn_dim": 64 * 4,
                 "dropout": 0.1,
             },
             "DataLoaderTrain": {
@@ -149,7 +149,7 @@ if __name__ == "__main__":
                 "embed_dim": 768,
                 "num_layers": 8,
                 "num_heads": 8,
-                "ffn_dim": 768 * 2,
+                "ffn_dim": 768 * 4,
                 "dropout": 0.1,
             },
             "MAEdecoder": {
@@ -159,7 +159,7 @@ if __name__ == "__main__":
                 "embed_dim": 768,
                 "num_layers": 4,
                 "num_heads": 8,
-                "ffn_dim": 768 * 2,
+                "ffn_dim": 768 * 4,
                 "dropout": 0.1,
             },
             "DataLoaderTrain": {
@@ -200,5 +200,5 @@ if __name__ == "__main__":
             },
         }
 
-    # pre_train_mae(config)  # Run model pre-training
+    pre_train_mae(config)  # Run model pre-training
     train_captioning_model(config)  # Run model training

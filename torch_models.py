@@ -759,8 +759,11 @@ class VisionLanguageTransformer(nn.Module):
         # Record the word indices of special word tokens
         self._pad, self._start, self._end = sp_model.pad_id(), sp_model.bos_id(), sp_model.eos_id()
 
-        # Projects the output of the encoder into features to be input into the decoder
-        self.visual_projection = nn.Linear(embed_dim, embed_dim)
+        # Projects the output of the encoder into features to be input into the decoder, applies layer norm
+        self.visual_projection = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.LayerNorm(embed_dim))
+        # Add learnable positional embeddings for the image patches relative to one another, +1 for CLS
+        # for use by the decoder when recieving encoder outputs going into cross-attention
+        self.img_pos_embed_decoder = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim))
         # An embedding layer to convert word indices to word vectors
         self.word_idx_embed = nn.Embedding(self.vocab_size, embed_dim, padding_idx=self._pad)
         # A positional embedding layer for the positional indices of the work tokens
@@ -876,7 +879,7 @@ class VisionLanguageTransformer(nn.Module):
         over the vocabulary at each timestep corresponding to the model's forward-looking, next-word
         prediction probabilities.
 
-        :param img_features: Deep latent representation of image patches of size (N, num_patches, E).
+        :param img_features: Deep latent representation of image patches of size (N, num_patches, embed_dim).
         :param word_idx_seq: A tensor containing a batch of word index sequences i.e. integers of size
             (N, T) where T is the max length among the sequences.
         :returns: A tensor of logits over the vocabulary denoting the model's next-word predictions at each
@@ -892,8 +895,10 @@ class VisionLanguageTransformer(nn.Module):
 
         # 3). Apply a projection to the img_features before feeding them into the cross-attention mechanism
         # nn.Linear(embed_dim, embed_dim): (batch_size, img_feat_dim) -> (batch_size, wordvec_dim)
-        # where img_feat_dim == wordvec_dim == embed_dim
+        # where img_feat_dim == wordvec_dim == embed_dim, applies a linear projection and layer norm
         img_features = self.visual_projection(img_features)  # (batch_size, num_patches, embed_dim)
+        # Also add in the positional encodings again so that the decoder has the spatial info of the patches
+        img_features += self.img_pos_embed_decoder  # (N, num_patches + 1, embed_dim), broadcasts along dim=0
 
         # 4). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
         # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
@@ -1029,3 +1034,76 @@ class VisionLanguageTransformer(nn.Module):
             return captions  # (N, T) = (batch_size, max_size)
         else:  # Return as a list of strings, process each sentence into plaintext
             return [decode_caption(x, self.sp_model) for x in captions]
+
+    def beam_search(self, imgs: torch.Tensor, max_length: int = None, return_strings: bool = True
+                    ) -> Union[np.ndarray, List[str]]:
+        """
+        Runs beam seach for 1 input image at a time
+
+        """
+
+## TODO: Make this work
+
+def beam_search(
+    self,
+    imgs: torch.Tensor,
+    beam_size: int = 5,
+    max_length: int = None,
+    return_strings: bool = True,
+):
+    """
+    Beam search caption decoding.
+
+    :param imgs: (1, C, H, W) — beam search assumes batch size = 1
+    :returns: best caption
+    """
+    assert imgs.shape[0] == 1, "Beam search expects batch size = 1"
+
+    max_length = self.max_length if max_length is None else max_length
+    self.eval()
+
+    with torch.no_grad():
+        img_features = self.encode(imgs)  # (1, S, E)
+
+        # Each beam: (token_ids, log_prob, finished)
+        beams = [(
+            torch.tensor([[self._start]], device=self.device_param.device),
+            0.0,
+            False
+        )]
+
+        for _ in range(max_length):
+            new_beams = []
+
+            for tokens, log_prob, finished in beams:
+                if finished:
+                    new_beams.append((tokens, log_prob, True))
+                    continue
+
+                logits = self.decode(img_features, tokens)
+                logits = logits[:, -1, :]           # (1, V)
+                log_probs = torch.log_softmax(logits, dim=-1)
+
+                topk_log_probs, topk_ids = torch.topk(log_probs, beam_size, dim=-1)
+
+                for k in range(beam_size):
+                    next_token = topk_ids[0, k].view(1, 1)
+                    next_log_prob = log_prob + topk_log_probs[0, k].item()
+
+                    new_tokens = torch.cat([tokens, next_token], dim=1)
+                    finished_flag = (next_token.item() == self._end)
+
+                    new_beams.append((new_tokens, next_log_prob, finished_flag))
+
+            # Keep top-k beams
+            beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
+
+            if all(finished for _, _, finished in beams):
+                break
+
+        best_tokens = beams[0][0].squeeze(0).cpu().numpy()
+
+    if return_strings:
+        return decode_caption(best_tokens, self.sp_model)
+    else:
+        return best_tokens
