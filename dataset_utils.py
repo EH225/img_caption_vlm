@@ -280,7 +280,7 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
         image_transforms = transforms.Compose([
             transforms.RandomHorizontalFlip(p=0.2),
             transforms.RandomApply([
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)],
                 p=0.2),
             transforms.RandomGrayscale(p=0.1),
             transforms.ToTensor(),
