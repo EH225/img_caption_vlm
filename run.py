@@ -69,19 +69,6 @@ def train_captioning_model(config: Dict) -> None:
 
     # 4). Configure the training pipeline with the trainer object
     trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, **config.get("TrainerCaptioning", {}))
-    # Look for pretrained weights if they exist, if so then load them, otherwise skip
-    pretrained_wts_dir = config.get("TrainerMAE", {}).get("results_folder", None)
-    max_milestone = None
-    if pretrained_wts_dir is not None:
-        pretrained_wts_dir = os.path.join(pretrained_wts_dir, "checkpoints")
-        if os.path.exists(pretrained_wts_dir):
-            milestones = [int(x.replace("model-", "").replace(".pt", ""))
-                          for x in os.listdir(pretrained_wts_dir)]
-            if len(milestones) > 0:
-                max_milestone = max(milestones)
-
-    if max_milestone is not None: # Load in the latest pre-trained weights
-        trainer.load_pretrained(max_milestone)
 
     # 5). Train the model to completion
     trainer.train()

@@ -459,11 +459,21 @@ class TrainerCaptioning:
         self.step = 0  # Training step counter
         self.all_losses = []  # Aggregate loss values during training
 
-        if use_latest_checkpoint:
+        if use_latest_checkpoint: # If set to True, then use the most recent checkpoint available
             checkpoints = os.listdir(self.checkpoints_folder)
-            if len(checkpoints) > 0:
+            if len(checkpoints) > 0: # If there is a milestone saved, load in the weights
                 last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
                 self.load(last_checkpoint)  # Load in the most recent milestone to continue training
+            else: # Otherwise, also check if there are any pre-trained weights we might also use as well
+                max_milestone = None # Look for checkpoints in the pre-trained weights folder instead
+                pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
+                if os.path.exists(pretrained_wts_dir):
+                    milestones = [int(x.replace("model-", "").replace(".pt", ""))
+                                  for x in os.listdir(pretrained_wts_dir)]
+                    if len(milestones) > 0:
+                        max_milestone = max(milestones)
+            if max_milestone is not None: # Load in the latest pre-trained weights
+                self.load_pretrained(max_milestone)
 
     def save(self, milestone: int) -> None:
         """
