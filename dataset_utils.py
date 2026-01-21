@@ -278,10 +278,11 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
 
     if add_augmentation is True:  # Add in data-augmentations
         image_transforms = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            transforms.RandomHorizontalFlip(p=0.2),
+            transforms.RandomApply([
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+                p=0.2),
             transforms.RandomGrayscale(p=0.1),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=(0.485, 0.456, 0.406),
