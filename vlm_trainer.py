@@ -14,7 +14,7 @@ import psutil
 import pandas as pd
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
-from torch_models import VisionLanguageTransformer, MAEdecoder
+from torch_models import VisionLanguageTransformer, MAEdecoder, get_param_groups
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
 
@@ -37,7 +37,7 @@ class TrainerMAE:
     def __init__(self, vlm: VisionLanguageTransformer, decoder: MAEdecoder, dataloader_train: DataLoader,
                  dataloader_val: DataLoader, lr_start: float = 5e-4, lr_end: float = 5e-5,
                  weight_decay: float = 1e-3, train_num_steps: int = 300000,
-                 adam_betas: Tuple[float] = (0.9, 0.99), grad_clip: float = 1.0,
+                 adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
                  sample_every: int = 500, save_every: int = 5000, results_folder: str = None,
                  use_amp: bool = False, use_latest_checkpoint: bool = True):
         """
@@ -97,12 +97,6 @@ class TrainerMAE:
 
         self.vlm = vlm  # The vision-language model whose image encoder half will be trained
         self.decoder = decoder  # The small transformer used for decoding and re-constructing masked patches
-        # Add up all the parameters of the image encoder half of the VLM that will be trained
-        n_params = sum(p.numel() for p in vlm.encoder.parameters())
-        n_params += vlm.img_pos_embed.numel() + vlm.cls_token.numel()
-        self.logger.info(f"Number of encoder model parameters: {n_params}")
-        n_params = sum(p.numel() for p in decoder.parameters())
-        self.logger.info(f"Number of decoder model parameters: {n_params}")
 
         self.device = get_device()  # Auto-detect what device to use for training
         self.grad_clip = grad_clip  # The amount of gradient clipping to use during training
@@ -115,27 +109,31 @@ class TrainerMAE:
         self.dataloader_train = dataloader_train
         self.dataloader_val = dataloader_val
 
-        # Configure the optimizers for training each model
-        self.opt_vlm = AdamW(self.vlm.parameters(), lr=lr_start, betas=adam_betas, weight_decay=weight_decay)
-        self.opt_decoder = AdamW(self.decoder.parameters(), lr=lr_start, betas=adam_betas,
-                                 weight_decay=weight_decay)
+        # Configure the optimizer for training - segment the encoder training parameters from the decoder
+        self.encoder_params = list(self.vlm.encoder.parameters())
+        self.encoder_params += [self.vlm.img_pos_embed, self.vlm.cls_token]
+        n_params = sum(p.numel() for p in self.encoder_params)
+        self.logger.info(f"Number of encoder model parameters: {n_params}")
+
+        self.decoder_params = list(self.decoder.parameters())
+        n_params = sum(p.numel() for p in self.decoder_params)
+        self.logger.info(f"Number of decoder model parameters: {n_params}")
+
+        self.all_params = self.encoder_params + self.decoder_params
+
+        enc_param_groups = get_param_groups(self.vlm, weight_decay=weight_decay, lr=lr_start)
+        dec_param_groups = get_param_groups(self.decoder, weight_decay=weight_decay, lr=lr_start)
+
+        # Configure the optimizer for training both models
+        self.opt = AdamW(enc_param_groups + dec_param_groups, betas=adam_betas)
 
         # Configure a learning rate schedule for training with warm-up
-        warmup_steps = int(train_num_steps * 0.01)  # Slowly ramp up the learning rate from very low to peak
-        warmup = LinearLR(self.opt_vlm, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
+        warmup_steps = int(train_num_steps * 0.10)  # Slowly ramp up the learning rate from very low to peak
+        warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
         # Cosine annealing of the learning rate during the rest of training
-        decay = CosineAnnealingLR(self.opt_vlm, T_max=train_num_steps - warmup_steps, eta_min=lr_end)
+        decay = CosineAnnealingLR(self.opt, T_max=train_num_steps - warmup_steps, eta_min=lr_end)
         # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
-        self.scheduler_vlm = SequentialLR(self.opt_vlm, schedulers=[warmup, decay], milestones=[warmup_steps])
-
-        # Configure a learning rate schedule for training with warm-up
-        warmup_steps = int(train_num_steps * 0.01)  # Slowly ramp up the learning rate from very low to peak
-        warmup = LinearLR(self.opt_decoder, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
-        # Cosine annealing of the learning rate during the rest of training
-        decay = CosineAnnealingLR(self.opt_decoder, T_max=train_num_steps - warmup_steps)
-        # Stack both the learning rate warm up and the gradual linear decay into 1 scheduler
-        self.scheduler_decoder = SequentialLR(self.opt_decoder, schedulers=[warmup, decay],
-                                              milestones=[warmup_steps])
+        self.scheduler = SequentialLR(self.opt, schedulers=[warmup, decay], milestones=[warmup_steps])
 
         self.step = 0  # Training step counter
         self.all_losses = []  # Aggregate loss values during training
@@ -158,10 +156,8 @@ class TrainerMAE:
         data = {"step": self.step,
                 "model_vlm": self.vlm.state_dict(),
                 "model_decoder": self.decoder.state_dict(),
-                "opt_vlm": self.opt_vlm.state_dict(),
-                "opt_decoder": self.opt_decoder.state_dict(),
-                "scheduler_vlm": self.scheduler_vlm.state_dict(),
-                "scheduler_decoder": self.scheduler_decoder.state_dict(),
+                "opt": self.opt.state_dict(),
+                "scheduler": self.scheduler.state_dict(),
                 }
         torch.save(data, checkpoint_path)
         # Save down all the loss values produced by model training since the last caching
@@ -183,20 +179,13 @@ class TrainerMAE:
         self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model_vlm"])
         self.decoder.load_state_dict(checkpoint_data["model_decoder"])
-        self.opt_vlm.load_state_dict(checkpoint_data["opt_vlm"])
-        self.opt_decoder.load_state_dict(checkpoint_data["opt_decoder"])
-        self.scheduler_vlm.load_state_dict(checkpoint_data["scheduler_vlm"])
-        self.scheduler_decoder.load_state_dict(checkpoint_data["scheduler_decoder"])
+        self.opt.load_state_dict(checkpoint_data["opt"])
+        self.scheduler.load_state_dict(checkpoint_data["scheduler"])
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
         # Move the model and the optimizer to the same device to continue training or for inference
-        for state in self.opt_vlm.state.values():
-            for k, v in state.items():
-                if torch.is_tensor(v):
-                    state[k] = v.to(self.device)
-
-        for state in self.opt_decoder.state.values():
+        for state in self.opt.state.values():
             for k, v in state.items():
                 if torch.is_tensor(v):
                     state[k] = v.to(self.device)
@@ -210,7 +199,7 @@ class TrainerMAE:
         :returns: None. Caches the results to disk.
         """
         self.logger.info(f"Starting MAE Training, device={self.device}, amp_dtype={self.amp_dtype}")
-        for i, param_group in enumerate(self.opt_vlm.param_groups):  # Report the learning rate and wt decay
+        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and wt decay
             self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
             break  # Show for only the first parameter group, assume all are the same
 
@@ -239,8 +228,7 @@ class TrainerMAE:
                 imgs = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
 
                 # Zero the grads of the opt before computing the loss
-                self.opt_vlm.zero_grad(set_to_none=True)
-                self.opt_decoder.zero_grad(set_to_none=True)
+                self.opt.zero_grad(set_to_none=True)
 
                 # Compute the forward pass through the vlm encoder and the MAE decoder models
                 if self.amp_dtype is not None:
@@ -262,33 +250,22 @@ class TrainerMAE:
                 if self.amp_dtype == torch.float16:
                     scaler.scale(loss).backward()
                     if self.grad_clip is not None:
-                        scaler.unscale_(self.opt_vlm)  # Unscale before clipping
-                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
-                    scaler.step(self.opt_vlm)  # Update the model parameters by taking a gradient step
+                        scaler.unscale_(self.opt)  # Unscale before clipping
+                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
+                    scaler.step(self.opt)  # Update the model parameters by taking a gradient step
                     scaler.update()
-
-                    if self.grad_clip is not None:
-                        scaler.unscale_(self.opt_decoder)  # Unscale before clipping
-                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.decoder.parameters(),
-                                                                           self.grad_clip)
-                    scaler.step(self.opt_decoder)  # Update the model parameters by taking a gradient step
-                    scaler.update()
-
                 else:
                     loss.backward()
                     if self.grad_clip is not None:
-                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
-                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.decoder.parameters(),
-                                                                           self.grad_clip)
+                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
+                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
                     # Update the model parameters by taking a gradient step
-                    self.opt_vlm.step()
-                    self.opt_decoder.step()
+                    self.opt.step()
 
                 pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm_vlm=f"{grad_norm_vlm:.3f}",
                                  grad_norm_decoder=f"{grad_norm_decoder:.3f}")
 
-                self.scheduler_vlm.step()  # Update the learning rate scheduler for the VLM
-                self.scheduler_decoder.step()  # Update the learning rate scheduler for the decoder model
+                self.scheduler.step()  # Update the learning rate scheduler
 
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
                 self.step += 1
@@ -363,8 +340,8 @@ class TrainerMAE:
 class TrainerCaptioning:
     def __init__(self, vlm: VisionLanguageTransformer, dataloader_train: DataLoader,
                  dataloader_val: DataLoader, lr_start: float = 1e-4, lr_end: float = 1e-5,
-                 weight_decay: float = 1e-3, train_num_steps: int = 300000,
-                 adam_betas: Tuple[float] = (0.9, 0.99), grad_clip: float = 1.0,
+                 wd_encoder: float = 1e-3, wd_decoder: float = 1e-3, train_num_steps: int = 30000,
+                 adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
                  sample_every: int = 500, save_every: int = 5000, results_folder: str = None,
                  use_amp: bool = False, use_latest_checkpoint: bool = True):
         """
@@ -377,7 +354,10 @@ class TrainerCaptioning:
         :param dataloader_val: A data loader object that will yield the required validation batches.
         :param lr_start: The initial learning rate.
         :param lr_end: The terminal training learning rate.
-        :param weight_decay: The weight_decay to provide to the Adam optimizer for L2 regularization.
+        :param wd_encoder: The weight_decay to provide to the Adam optimizer for L2 regularization of the
+            encoder model parameters (certain params are excluded).
+        :param wd_decoder: The weight_decay to provide to the Adam optimizer for L2 regularization of the
+            decoder model parameters (certain params are excluded).
         :param train_num_steps: The number of training steps to run in total.
         :param adam_betas: Beta parameters for the adam optimizer.
         :param grad_clip: The amount of gradient clipping to use during training.
@@ -427,7 +407,7 @@ class TrainerCaptioning:
         self.save_every = save_every  # The frequency of saving model weights
         self.sample_every = sample_every  # How often to generate samples
         self.train_num_steps = train_num_steps  # The total number of training steps
-        self.freeze_steps = int(train_num_steps * 0.15)  # Freeze the encoder for the first bit of training
+        self.freeze_steps = int(train_num_steps * 0.05)  # Freeze the encoder for the first bit of training
         # since it will be pre-trained on the MAE objective and should generally be in a good spot
 
         # Save a pointer to the train and validation dataloaders
@@ -442,14 +422,25 @@ class TrainerCaptioning:
         self.decoder_params += list(self.vlm.word_idx_embed.parameters())
         self.decoder_params += list(self.vlm.decoder.parameters())
         self.decoder_params += list(self.vlm.vocab_proj.parameters())
+        self.decoder_params += [self.vlm.img_pos_embed_decoder]
 
-        self.opt = AdamW([  # Set the learning rate lower for the encoder parameters due to pre-training
-            {"params": self.encoder_params, "lr": lr_start * 0.25},
-            {"params": self.decoder_params, "lr": lr_start},
-        ], betas=adam_betas, weight_decay=weight_decay)
+        # Configure the optimizer, use 1/4 the learning rate for all encoder parameters and different weight
+        # decays for the encoder vs decoder parameters
+        self.opt = AdamW(
+            get_param_groups(self.vlm.patch_embed, wd_encoder, lr_start * 0.25)
+            + [{"params": self.vlm.img_pos_embed, "weight_decay": 0.0, "lr": lr_start * 0.25},
+               {"params": self.vlm.cls_token, "weight_decay": 0.0, "lr": lr_start * 0.25},
+               {"params": self.vlm.img_pos_embed_decoder, "weight_decay": 0.0, "lr": lr_start},
+             ]
+            + get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.25)
+            + get_param_groups(self.vlm.visual_projection, wd_decoder, lr_start)
+            + get_param_groups(self.vlm.word_idx_embed, wd_decoder, lr_start)
+            + get_param_groups(self.vlm.decoder, wd_decoder, lr_start)
+            + get_param_groups(self.vlm.vocab_proj, wd_decoder, lr_start),
+            betas=adam_betas)
 
         # Configure a learning rate schedule for training with warm-up
-        warmup_steps = int(train_num_steps * 0.05)  # Slowly ramp up the learning rate from very low to peak
+        warmup_steps = int(train_num_steps * 0.10)  # Slowly ramp up the learning rate from very low to peak
         warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
         # Cosine annealing of the learning rate during the rest of training
         decay = CosineAnnealingLR(self.opt, T_max=train_num_steps - warmup_steps, eta_min=lr_end)
@@ -532,7 +523,7 @@ class TrainerCaptioning:
         # Re-instate the model weights from the checkpoint data read in from disk
         self.vlm.load_state_dict(checkpoint_data["model_vlm"])
 
-    def train(self, eps: float = 0.0, max_len: int = 50) -> None:
+    def train(self, eps: float = 0.1, max_len: int = 50) -> None:
         """
         Runs the training of the model until completion for self.train_num_steps total training iterations.
 

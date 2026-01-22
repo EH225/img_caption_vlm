@@ -66,6 +66,49 @@ def random_masking(x: torch.Tensor, mask_ratio: float = 0.75) -> Tuple[torch.Ten
     return x_visible, mask, ids_restore
 
 
+NO_DECAY_LAYERS = (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.GroupNorm, nn.Embedding)
+
+def get_param_groups(model, weight_decay: float, lr: float, verbose: bool = False) -> List:
+    ## TODO: Clean this up
+    decay = []
+    no_decay = []
+
+    if hasattr(model, "num_patches") and hasattr(model, "embed_dim"):
+        img_patch_embed_shape = (1, model.num_patches + 1, model.embed_dim)
+        cls_token_shape = (1, 1, model.embed_dim)
+    else:
+        img_patch_embed_shape, cls_token_shape = None, None
+
+    for module in model.modules():
+        for param in module.parameters(recurse=False):
+            if not param.requires_grad:
+                continue
+
+            if param.ndim == 1 or isinstance(module, NO_DECAY_LAYERS):
+                no_decay.append(param)
+            elif cls_token_shape is not None and param.shape in [img_patch_embed_shape, cls_token_shape]:
+                no_decay.append(param)
+
+            else:
+                decay.append(param)
+
+    # Check that all parameters have been accounted for i.e. either in the decay or no decay category
+    total_params = sum(p.numel() for p in model.parameters())
+    decay_params = sum(p.numel() for p in decay)
+    no_decay_params = sum(p.numel() for p in no_decay)
+    assert decay_params + no_decay_params == total_params, "decay_params + no_decay_params =/= total_params"
+
+    if verbose:
+        print("Total param count:", total_params)
+        print("Decay param count:",  decay_params, f"{decay_params/total_params:.1%}")
+        print("No-decay param count:", no_decay_params, f"{no_decay_params/total_params:.1%}")
+
+    return [
+        {"params": decay, "weight_decay": weight_decay, "lr": lr},
+        {"params": no_decay, "weight_decay": 0.0, "lr": lr},
+    ]
+
+
 ##############################
 ### Transformer Sub-Blocks ###
 ##############################
@@ -708,18 +751,21 @@ class VisionLanguageTransformer(nn.Module):
         Initializes a Vision-Language Transformer model for image captioning.
 
         Input images are first processed by the vision transformer encoder, and then passed to the language
-        model transformer decoder for work token index predictions.
+        model transformer decoder for word token index predictions.
 
-        Images are assumed to be square. The same number of attention heads and transformer blocks are used
-        for both the encoder and decoder transformers. Also the embedding dimension of the image patches is
-        set equal to that of the word token embeddings.
+        Images are assumed to be square. num_layers attention blocks are used in the encoder and half as many
+        in the language model decoder i.e. max(1, num_layers // 2). Both the encoder and decoder use the same
+        number of attention heads and the same embedding dimension i.e. for patch embeddings and word token
+        embeddings.
 
         :param img_size: An integer representing the height & width of input image (assumes square image).
         :param patch_size: An integer representing height & width of each patch (square patch).
         :param in_channels: The number of input image channels (e.g. 3 for RGB).
-        :param embed_dim: The dimension of the linear embedding space i.e. the size of the embedding vectors
-            each image patch is turned into.
-        :param num_layers: The number of encoder layers to sequentially stack.
+        :param embed_dim: The dimension of the embedding space i.e. the size of the embedding vectors each
+            image patch and work token is turned into. This is also the size of all key, query, and value
+            vectors during attention operations.
+        :param num_layers: The number of encoder layers to sequentially stack, and 2x the number of language
+            model decoder layers.
         :param num_heads: The number of attention heads to use when computing attention outputs.
         :param ffn_dim: The size of the hidden layer in the feed-forward neural network. Generally set to be
             2x or 4x the embed_dim.
@@ -770,7 +816,7 @@ class VisionLanguageTransformer(nn.Module):
         self.word_pos_embed = PositionalEmbedding(embed_dim, dropout, max_length)
         # Construct the language decoder with cross-attention to the image patches embeddings from the encoder
         decoder_layer = TransformerDecoderLayer(embed_dim, num_heads, ffn_dim, dropout)
-        self.decoder = TransformerDecoder(decoder_layer, num_layers)
+        self.decoder = TransformerDecoder(decoder_layer, max(1, num_layers // 2))
         # A final projection layer from the outputs of the decoder to the vocab space
         self.vocab_proj = nn.Linear(embed_dim, self.vocab_size)
 
@@ -931,7 +977,7 @@ class VisionLanguageTransformer(nn.Module):
         """
         return self.decode(self.encode(imgs), word_idx_seq)
 
-    def compute_loss(self, decoder_outputs: torch.Tensor, target_word_idx: torch.Tensor, eps: float = 0.0
+    def compute_loss(self, decoder_outputs: torch.Tensor, target_word_idx: torch.Tensor, eps: float = 0.1
                      ) -> torch.float:
         """
         Computes a cross-entropy loss for model training using the outputs from the decoder (logits) and a
@@ -944,6 +990,8 @@ class VisionLanguageTransformer(nn.Module):
             logit scores from the model at each timestep predicting the most likely next word to follow.
         :param target_word_idx: A torch.Tensor of size (N, T) containing the ground-truth caption token
             indices for each image in the training batch.
+        :param eps: A smoothing parameter used during decoding to smooth the probability distribution
+            predicted by the model over the vocabulary space.
         :returns: The sum of negative log-likelihood across all timesteps in the decoding. Log-likelihood
             values are not computed for the padding tokens.
         """
@@ -987,11 +1035,13 @@ class VisionLanguageTransformer(nn.Module):
                ) -> Union[np.ndarray, List[str]]:
         """
         Given an input batch of images, this method uses a greedy decoding approach to predict the image
-        caption for each and outputs a torch.Tensor of vocab word indices for each image in the image batch
-        detailing what image caption would be predicted by the model for each.
+        caption for each and outputs a np.ndarray of vocab word indices for each image in the image batch
+        detailing what image caption would be predicted by the model for each or a list of strings
+        (sentences).
 
         :param imgs: A batch of input images of size (N, C, H, W).
-        :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions.
+        :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
+            or a list of caption sentences (strings).
         """
         max_length = self.max_length if max_length is None else max_length
         self.eval()  # Switch to eval mode to turn off dropout
@@ -1035,75 +1085,74 @@ class VisionLanguageTransformer(nn.Module):
         else:  # Return as a list of strings, process each sentence into plaintext
             return [decode_caption(x, self.sp_model) for x in captions]
 
-    def beam_search(self, imgs: torch.Tensor, max_length: int = None, return_strings: bool = True
-                    ) -> Union[np.ndarray, List[str]]:
+
+    def _beam_search(self, img: torch.Tensor, beam_size: int = 5, max_length: int = None,
+                    return_string: bool = True) -> Union[np.ndarray, List[str]]:
         """
-        Runs beam seach for 1 input image at a time
+        Given a single input image of size (1, C, H, W), this method uses beam search to predict the image
+        caption and outputs a np.ndarray of vocab word indices for the image or a single string that is the
+        decoded word tokens.
 
+        :param imgs: A single input image of size (1, C, H, W).
+        :returns: A np.ndarray of size (1, T) containing the integer word indices of the predicted caption
+            or a caption sentence as a string.
         """
+        assert img.shape[0] == 1, "Beam search expects batch size = 1"
 
-## TODO: Make this work
+        max_length = self.max_length if max_length is None else max_length
+        self.eval()  # Switch to eval mode to turn off dropout
 
-def beam_search(
-    self,
-    imgs: torch.Tensor,
-    beam_size: int = 5,
-    max_length: int = None,
-    return_strings: bool = True,
-):
-    """
-    Beam search caption decoding.
+        with torch.no_grad(): # Used for inference, no gradient tracking required
+            img_features = self.encode(img)  # (1, S, E)
 
-    :param imgs: (1, C, H, W) — beam search assumes batch size = 1
-    :returns: best caption
-    """
-    assert imgs.shape[0] == 1, "Beam search expects batch size = 1"
+            # Each beam contains: (token_ids, log_prob, finished_flag)
+            beams = [(torch.tensor([[self._start]], device=self.device_param.device), 0.0, False)]
 
-    max_length = self.max_length if max_length is None else max_length
-    self.eval()
+            for _ in range(max_length):
+                new_beams = []
 
-    with torch.no_grad():
-        img_features = self.encode(imgs)  # (1, S, E)
+                for tokens, log_prob, finished in beams: # Extend the existing beams by 1 more token
+                    if finished: # Nothing further to add if this beam has finished
+                        new_beams.append((tokens, log_prob, True))
+                        continue
 
-        # Each beam: (token_ids, log_prob, finished)
-        beams = [(
-            torch.tensor([[self._start]], device=self.device_param.device),
-            0.0,
-            False
-        )]
+                    logits = self.decode(img_features, tokens) # Run the decoder to predict the next token
+                    logits = logits[:, -1, :]  # Get the predicted logits over the vocab (1, V)
+                    log_probs = torch.log_softmax(logits, dim=-1) # Softmax over the logits
 
-        for _ in range(max_length):
-            new_beams = []
+                    topk_log_probs, topk_ids = torch.topk(log_probs, beam_size, dim=-1)
 
-            for tokens, log_prob, finished in beams:
-                if finished:
-                    new_beams.append((tokens, log_prob, True))
-                    continue
+                    for k in range(beam_size):
+                        next_token = topk_ids[0, k].view(1, 1)
+                        next_log_prob = log_prob + topk_log_probs[0, k].item()
 
-                logits = self.decode(img_features, tokens)
-                logits = logits[:, -1, :]           # (1, V)
-                log_probs = torch.log_softmax(logits, dim=-1)
+                        new_tokens = torch.cat([tokens, next_token], dim=1) # Append new predicted token
+                        finished_flag = (next_token.item() == self._end) # Check if </s> predicted
 
-                topk_log_probs, topk_ids = torch.topk(log_probs, beam_size, dim=-1)
+                        new_beams.append((new_tokens, next_log_prob, finished_flag))
 
-                for k in range(beam_size):
-                    next_token = topk_ids[0, k].view(1, 1)
-                    next_log_prob = log_prob + topk_log_probs[0, k].item()
+                # Keep the top-k beams
+                beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
 
-                    new_tokens = torch.cat([tokens, next_token], dim=1)
-                    finished_flag = (next_token.item() == self._end)
+                if all(finished for _, _, finished in beams): # Terminate early if all beams finished
+                    break
 
-                    new_beams.append((new_tokens, next_log_prob, finished_flag))
+            best_tokens = beams[0][0].squeeze(0).cpu().numpy() # Already sorted by log_prob
 
-            # Keep top-k beams
-            beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
+        return decode_caption(best_tokens, self.sp_model) if return_string else best_tokens
 
-            if all(finished for _, _, finished in beams):
-                break
 
-        best_tokens = beams[0][0].squeeze(0).cpu().numpy()
+    def beam_search(self, imgs: torch.Tensor, beam_size: int = 5, max_length: int = None,
+                    return_strings: bool = True) -> Union[np.ndarray, List[str]]:
+        """
+        Given an input batch of images, this method uses beam search to predict the image caption for each
+        and outputs a np.ndarray of vocab word indices for each image in the image batch detailing what
+        image caption would be predicted by the model for each or a list of strings (sentences).
 
-    if return_strings:
-        return decode_caption(best_tokens, self.sp_model)
-    else:
-        return best_tokens
+        :param imgs: A batch of input images of size (N, C, H, W).
+        :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
+            or a list of caption sentences (strings).
+        """
+        outputs = [self._beam_search(imgs[i:i+1], beam_size, max_length, return_strings)
+                   for i in range(imgs.shape[0])]
+        return outputs if return_strings else torch.cat(outputs, dim=0)
