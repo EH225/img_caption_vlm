@@ -134,3 +134,20 @@ def plot_and_save_loss(loss_dir: str) -> None:
         ax.grid(color="lightgray", zorder=-3)
         fig.savefig(os.path.join(loss_dir, "training_loss.png"), dpi=300, bbox_inches='tight')
         plt.close(fig)
+
+### TODO: Need to load in the ground truth values
+
+# ### Just pre-cache it and be done
+
+# def load_gts_dict(captions_path)
+
+# captions_path = os.path.join(REPO_DIR, "dataset/coco_original/annotations/captions_val2017.json")
+# coco_data = COCO(captions_path)
+# image_ids = coco_data.getImgIds()
+# # Create a list of dictionaries, one for each training image in the dataset
+# caption_dicts = [coco_data.loadAnns(coco_data.getAnnIds(imgIds=img_id)) for img_id in image_ids]
+
+# gt_df = []
+# for d in tqdm(caption_dicts, ncols=75):
+#     gt_df.append(pd.DataFrame(d))
+# gt_df = pd.concat(gt_df)

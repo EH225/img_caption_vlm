@@ -315,6 +315,15 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
                       collate_fn=lambda b: collate_fn(b, pad_token_id=sp.pad_id()))
 
 
+def get_gts_val(dataset_dir: str):
+    pass
+    ## TODO neeed to load these
+
+
+### TODO: Add a thing that is able to save them as well, produce a cached file
+### TODO: Create a new compressed zip file
+
+
 if __name__ == "__main__":
     # 0).  The steps below run a full data-set preprocessing pipeline of steps
     img_size = 224  # Process all the images to be a set size with H==W
