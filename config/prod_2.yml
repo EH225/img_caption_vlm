@@ -42,6 +42,6 @@ TrainerCaptioning:
     eval_every: 1000
     results_folder: "results/captioning"
     use_amp": True
-    use_latest_checkpoint: True
+    use_latest_checkpoint: 2
     eps": 0.10
     max_len": 50

@@ -67,6 +67,6 @@ TrainerCaptioning:
     eval_every: 5
     results_folder: "debug/captioning"
     use_amp": True
-    use_latest_checkpoint: True
+    use_latest_checkpoint: 1
     eps": 0.10
     max_len": 5
