@@ -449,9 +449,9 @@ class TrainerCaptioning:
         self.logger.info(f"Decoder model parameters: {sum(p.numel() for p in self.decoder_params)}")
         self.logger.info(f"Total model parameters: {sum(p.numel() for p in vlm.parameters())}")
 
-        # Configure the optimizer, use 1/4 the learning rate for all encoder parameters and different weight
+        # Configure the optimizer, use 1/8 the learning rate for all encoder parameters and different weight
         # decays for the encoder vs decoder parameters
-        enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.25)
+        enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.125)
         dec_groups = get_param_groups(self.vlm.decoder, wd_decoder, lr_start)
         self.opt = AdamW(enc_groups + dec_groups, betas=adam_betas)
 
@@ -723,3 +723,4 @@ class TrainerCaptioning:
                 del outputs, loss, images, captions
 
                 pbar.update(1)
+

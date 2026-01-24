@@ -10,7 +10,7 @@ import sentencepiece as spm
 from torch_models import ImageEncoder, MAEdecoder, LanguageDecoder, VisionLanguageModel
 from dataset_utils import get_dataloader
 from vlm_trainer import TrainerCaptioning, TrainerMAE
-from utils import get_device, read_config
+from utils import read_config
 from typing import Dict
 import argparse, shutil, json
 
