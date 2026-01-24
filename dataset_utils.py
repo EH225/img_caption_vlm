@@ -304,24 +304,18 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     sp = spm.SentencePieceProcessor()
     sp.load(vocab_model_path)
     dataset = CocoCaptionDataset(image_dir, caption_path, image_transforms)
+    print(f"{split} dataloader device: {device}")
     if device == "cuda":
         num_workers, pin_memory, persistent_workers, prefetch_factor = 4, True, True, 16
     else:
         num_workers, pin_memory, persistent_workers, prefetch_factor = 0, False, False, None
+    print("num_workers, pin_memory, persistent_workers, prefetch_factor:",
+          num_workers, pin_memory, persistent_workers, prefetch_factor)
     # num_workers, pin_memory, persistent_workers = 0, False, False
     return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                       pin_memory=pin_memory, persistent_workers=persistent_workers,
                       prefetch_factor=prefetch_factor,
                       collate_fn=lambda b: collate_fn(b, pad_token_id=sp.pad_id()))
-
-
-def get_gts_val(dataset_dir: str):
-    pass
-    ## TODO neeed to load these
-
-
-### TODO: Add a thing that is able to save them as well, produce a cached file
-### TODO: Create a new compressed zip file
 
 
 if __name__ == "__main__":

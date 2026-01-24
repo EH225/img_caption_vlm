@@ -155,7 +155,11 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
         cfg = yaml.safe_load(f)
     cfg["dataset_dir"] = dataset_dir
     cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
+    cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
     cfg["DataLoaderVal"]["dataset_dir"] = dataset_dir
+    device = get_device()
+    cfg["DataLoaderTrain"]["device"] = device
+    cfg["DataLoaderVal"]["device"] = device
     return cfg
 
 
