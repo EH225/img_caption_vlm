@@ -10,7 +10,7 @@ import sentencepiece as spm
 from torch_models import ImageEncoder, MAEdecoder, LanguageDecoder, VisionLanguageModel
 from dataset_utils import get_dataloader
 from vlm_trainer import TrainerCaptioning, TrainerMAE
-from utils import get_device
+from utils import get_device, read_config
 from typing import Dict
 import argparse, shutil, json
 
@@ -79,173 +79,13 @@ def train_captioning_model(config: Dict) -> None:
                   max_len=config["TrainerCaptioning"].get("max_len", 50))
 
 
-DATASET_DIR = f"{CURRENT_DIR}/dataset/preprocessed/"
-
-#### Config for local debugging
-DEBUG_CONFIG = {
-    "clear_dir": False,
-    "dataset_dir": DATASET_DIR,
-    "ImageEncoder": {
-        "img_size": 224,
-        "patch_size": 16,
-        "in_channels": 3,
-        "embed_dim": 64,
-        "num_layers": 2,
-        "num_heads": 8,
-        "ffn_dim": 64 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "MAEdecoder": {
-        "img_size": 224,
-        "patch_size": 16,
-        "in_channels": 3,
-        "embed_dim": 64,
-        "num_layers": 1,
-        "num_heads": 8,
-        "ffn_dim": 64 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "LanguageDecoder": {
-        "img_feature_shape": (196, 64),
-        "embed_dim": 32,
-        "num_layers": 2,
-        "num_heads": 8,
-        "ffn_dim": 32 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "DataLoaderTrain": {
-        "batch_size": 16,
-        "device": get_device().type,
-        "dataset_dir": DATASET_DIR,
-        "add_augmentation": True,
-    },
-    "DataLoaderVal": {
-        "batch_size": 16,
-        "device": get_device().type,
-        "dataset_dir": DATASET_DIR,
-        "add_augmentation": False,
-    },
-    "TrainerMAE": {
-        "lr_start": 1e-4,
-        "lr_end": 1e-6,
-        "weight_decay": 0.05,
-        "train_num_steps": 80,
-        "grad_clip": 1.0,
-        "sample_every": 10,
-        "save_every": 40,
-        "results_folder": f"{CURRENT_DIR}/debug/pretrain",
-        "use_amp": True,
-        "use_latest_checkpoint": True,
-        "mask_ratio": 0.75,
-    },
-    "TrainerCaptioning": {
-        "lr_start": 1.5e-4,
-        "lr_end": 1e-6,
-        "wd_encoder": 0.05,
-        "wd_decoder": 0.01,
-        "train_num_steps": 25,
-        "warm_up_pct": 0.1,
-        "frozen_enc_pct": 0.3,
-        "grad_clip": 1.0,
-        "sample_every": 5,
-        "save_every": 10,
-        "eval_every": 5,
-        "results_folder": f"{CURRENT_DIR}/debug/captioning",
-        "use_amp": True,
-        "use_latest_checkpoint": True,
-        "eps": 0.10,
-        "max_len": 5,
-    },
-}
-
-#### Config for final prod training
-PROD_CONFIG = {
-    "dataset_dir": DATASET_DIR,
-    "ImageEncoder": {
-        "img_size": 224,
-        "patch_size": 16,
-        "in_channels": 3,
-        "embed_dim": 768,
-        "num_layers": 8,
-        "num_heads": 12,
-        "ffn_dim": 768 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "MAEdecoder": {
-        "img_size": 224,
-        "patch_size": 16,
-        "in_channels": 3,
-        "embed_dim": 768,
-        "num_layers": 4,
-        "num_heads": 8,
-        "ffn_dim": 768 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "LanguageDecoder": {
-        "img_feature_shape": (196, 768),
-        "embed_dim": 512,
-        "num_layers": 4,
-        "num_heads": 8,
-        "ffn_dim": 512 * 4,
-        "dropout": 0.1,
-        "ffn_dropout": 0.2,
-    },
-    "DataLoaderTrain": {
-        "batch_size": 256,
-        "device": get_device().type,
-        "dataset_dir": DATASET_DIR,
-        "add_augmentation": True,
-    },
-    "DataLoaderVal": {
-        "batch_size": 256,
-        "device": get_device().type,
-        "dataset_dir": DATASET_DIR,
-        "add_augmentation": False,
-    },
-    "TrainerMAE": {
-        "lr_start": 1e-4,
-        "lr_end": 1e-6,
-        "weight_decay": 0.05,
-        "train_num_steps": 80000,
-        "grad_clip": 1.0,
-        "sample_every": 1000,
-        "save_every": 5000,
-        "results_folder": f"{CURRENT_DIR}/results/pretrain",
-        "use_amp": True,
-        "use_latest_checkpoint": True,
-        "mask_ratio": 0.75,
-    },
-    "TrainerCaptioning": {
-        "lr_start": 1.5e-4,
-        "lr_end": 1e-6,
-        "wd_encoder": 0.05,
-        "wd_decoder": 0.01,
-        "train_num_steps": 25000,
-        "warm_up_pct": 0.1,
-        "frozen_enc_pct": 0.3,
-        "grad_clip": 1.0,
-        "sample_every": 500,
-        "save_every": 1000,
-        "eval_every": 1000,
-        "results_folder": f"{CURRENT_DIR}/results/captioning",
-        "use_amp": True,
-        "use_latest_checkpoint": True,
-        "eps": 0.10,
-        "max_len": 50,
-    },
-}
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training Pipeline Module")
-    parser.add_argument("--debug", help="Set to True to run in debug mode")
+    parser.add_argument("--config", help="The name of the config file to use for training")
     args = parser.parse_args()
-    debug = args.debug.lower() == "true"
-    config = DEBUG_CONFIG if debug else PROD_CONFIG
+    debug = args.config.lower() == "debug"
+
+    config = read_config(args.config, dataset_dir=f"{CURRENT_DIR}/dataset/preprocessed/")
 
     if debug and config.get("clear_dir", False):
         debug_results_dir = os.path.join(CURRENT_DIR, "debug")

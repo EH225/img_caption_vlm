@@ -1,11 +1,17 @@
 """
 This module contains general utility functions used throughout the repo.
 """
-import torch, os
+import sys, os
+
+CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, CURRENT_DIR)
+
+import torch, yaml
 import numpy as np
 import pandas as pd
 from typing import List, Union
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 
 def get_device():
@@ -135,19 +141,21 @@ def plot_and_save_loss(loss_dir: str) -> None:
         fig.savefig(os.path.join(loss_dir, "training_loss.png"), dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-### TODO: Need to load in the ground truth values
 
-# ### Just pre-cache it and be done
+def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> dict:
+    """
+    Helper function that reads in a yaml config file specified and returns the associated data as a dict.
 
-# def load_gts_dict(captions_path)
+    :param config_name: A str denoting the name of the config e.g. "debug" or "prod".
+    :param dataset_dict: The location of the dataset to add to the config file.
+    :return: A dictionary of data read in from the yaml config file.
+    """
+    file_path = os.path.join(CURRENT_DIR, f"config/{config_name}.yml")
+    with open(file_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    cfg["dataset_dir"] = dataset_dir
+    cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
+    cfg["DataLoaderVal"]["dataset_dir"] = dataset_dir
+    return cfg
 
-# captions_path = os.path.join(REPO_DIR, "dataset/coco_original/annotations/captions_val2017.json")
-# coco_data = COCO(captions_path)
-# image_ids = coco_data.getImgIds()
-# # Create a list of dictionaries, one for each training image in the dataset
-# caption_dicts = [coco_data.loadAnns(coco_data.getAnnIds(imgIds=img_id)) for img_id in image_ids]
 
-# gt_df = []
-# for d in tqdm(caption_dicts, ncols=75):
-#     gt_df.append(pd.DataFrame(d))
-# gt_df = pd.concat(gt_df)
