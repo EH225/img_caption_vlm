@@ -43,5 +43,5 @@ TrainerCaptioning:
     results_folder: "results/captioning"
     use_amp: True
     use_latest_checkpoint: 2 # Load in only the model weights
-    eps": 0.10
-    max_len": 50
+    eps: 0.10
+    max_len: 50
