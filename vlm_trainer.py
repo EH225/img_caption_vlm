@@ -539,7 +539,7 @@ class TrainerCaptioning:
         # Re-instate the model weights from the checkpoint data read in from disk
         self.vlm.encoder.load_state_dict(checkpoint_data["model_encoder"])
 
-    def compute_eval_scores(self, max_len: int = 50, max_batches: int = 5) -> Tuple[float]:
+    def compute_eval_scores(self, max_len: int = 50, max_batches: int = 10) -> Tuple[float]:
         """
         This method computes the negative log-likelihood, perplexity, and CIDEr score on the validation data
         set using the current model weights. Calling this method periodically during training is helpful for

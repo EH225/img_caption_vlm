@@ -884,7 +884,7 @@ class MAEdecoder(nn.Module):
         N, num_patches, embed_dim = x_vis_latent.shape  # Get the batch size
         msg = f"num_patches expected to be <= {self.num_patches}, but got {num_patches}"
         assert num_patches <= self.num_patches, msg
-        msg = f"num_patches expected to be {self.embed_dim}, but got {embed_dim}"
+        msg = f"embed_dim expected to be {self.embed_dim}, but got {embed_dim}"
         assert embed_dim == self.embed_dim, msg
         mask_tokens = self.mask_token.repeat(N, mask.sum(1).max().int(),
                                              1)  # (N, num_patches_masked, embed_dim)
@@ -1170,6 +1170,10 @@ class VisionLanguageModel(nn.Module):
         (sentences).
 
         :param imgs: A batch of input images of size (N, C, H, W).
+        :param max_length: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+            the predicted word token indices for the decoded captions. If True, then this method returns a
+            list of length N containing strings for each caption.
         :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
@@ -1215,14 +1219,20 @@ class VisionLanguageModel(nn.Module):
         else:  # Return as a list of strings, process each sentence into plaintext
             return [decode_caption(x, self.sp_model) for x in captions]
 
-    def _beam_search(self, img: torch.Tensor, beam_size: int = 5, max_length: int = None,
+    def _beam_search(self, img: torch.Tensor, beam_size: int = 5, alpha: float = 0.7, max_length: int = None,
                      return_string: bool = True) -> Union[np.ndarray, List[str]]:
         """
         Given a single input image of size (1, C, H, W), this method uses beam search to predict the image
         caption and outputs a np.ndarray of vocab word indices for the image or a single string that is the
         decoded word tokens.
 
-        :param imgs: A single input image of size (1, C, H, W).
+        :param img: A single input image of size (1, C, H, W).
+        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
+        :param alpha: A length normalization parameter that penalizes very short caption decodings.
+        :param max_length: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+            the predicted word token indices for the decoded captions. If True, then this method returns a
+            list of length N containing strings for each caption.
         :returns: A np.ndarray of size (1, T) containing the integer word indices of the predicted caption
             or a caption sentence as a string.
         """
@@ -1237,7 +1247,7 @@ class VisionLanguageModel(nn.Module):
             # Each beam contains: (token_ids, log_prob, finished_flag)
             beams = [(torch.tensor([[self._start]], device=self.device_param.device), 0.0, False)]
 
-            for _ in range(max_length):
+            for i in range(max_length):
                 new_beams = []
 
                 for tokens, log_prob, finished in beams:  # Extend the existing beams by 1 more token
@@ -1260,17 +1270,17 @@ class VisionLanguageModel(nn.Module):
 
                         new_beams.append((new_tokens, next_log_prob, finished_flag))
 
-                # Keep the top-k beams
-                beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_size]
+                # Keep the top-k beams sorted by sum(log_prob) / (length)^alpha
+                beams = sorted(new_beams, key=lambda x: x[1] / (len(x[0]) ** alpha), reverse=True)[:beam_size]
 
                 if all(finished for _, _, finished in beams):  # Terminate early if all beams finished
                     break
 
-            best_tokens = beams[0][0].squeeze(0).cpu().numpy()  # Already sorted by log_prob
+            best_tokens = beams[0][0].squeeze(0).cpu().numpy()  # Already sorted by log_prob / length ** alpha
 
         return decode_caption(best_tokens, self.sp_model) if return_string else best_tokens
 
-    def beam_search(self, imgs: torch.Tensor, beam_size: int = 5, max_length: int = None,
+    def beam_search(self, imgs: torch.Tensor, beam_size: int = 5, alpha: float = 0.7, max_length: int = None,
                     return_strings: bool = True) -> Union[np.ndarray, List[str]]:
         """
         Given an input batch of images, this method uses beam search to predict the image caption for each
@@ -1278,9 +1288,15 @@ class VisionLanguageModel(nn.Module):
         image caption would be predicted by the model for each or a list of strings (sentences).
 
         :param imgs: A batch of input images of size (N, C, H, W).
+        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
+        :param alpha: A length normalization parameter that penalizes very short caption decodings.
+        :param max_length: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+            the predicted word token indices for the decoded captions. If True, then this method returns a
+            list of length N containing strings for each caption.
         :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
-        outputs = [self._beam_search(imgs[i:i + 1], beam_size, max_length, return_strings)
+        outputs = [self._beam_search(imgs[i:i + 1], beam_size, alpha, max_length, return_strings)
                    for i in range(imgs.shape[0])]
         return outputs if return_strings else torch.cat(outputs, dim=0)
