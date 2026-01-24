@@ -270,7 +270,8 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
         'dataset/preprocessed/' relative to this file's location.
     :returns: A DataLoader object with the dataset split specified loaded.
     """
-    device = device if device is not None else get_device()  # Auto-detect the available hardware
+    device = device if device is not None else get_device().type  # Auto-detect the available hardware
+    assert isinstance(device, str), "device expected to be a string"
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
     image_dir = os.path.join(dataset_dir, f"images/{split}2017")
     caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")

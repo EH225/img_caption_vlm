@@ -157,7 +157,7 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
     cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
     cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
     cfg["DataLoaderVal"]["dataset_dir"] = dataset_dir
-    device = get_device()
+    device = get_device().type # Extract as a string
     cfg["DataLoaderTrain"]["device"] = device
     cfg["DataLoaderVal"]["device"] = device
     return cfg
