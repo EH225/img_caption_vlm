@@ -24,7 +24,7 @@ MAEdecoder:
     ffn_dropout: 0.2
 
 LanguageDecoder:
-    img_feature_shape: (196, 64)
+    img_feature_shape: [196, 64]
     embed_dim: 32
     num_layers: 2
     num_heads: 8

@@ -354,7 +354,7 @@ class TrainerCaptioning:
                  warm_up_pct: float = 0.10, frozen_enc_pct: float = 0.30,
                  adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
                  sample_every: int = 500, save_every: int = 5000, eval_every: int = 1000,
-                 results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: bool = True,
+                 results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: int = 1,
                  *args, **kwargs):
         """
         A framework for training a Vision-Language Model (VLT). This class wrapper has methods for loading
@@ -384,8 +384,10 @@ class TrainerCaptioning:
         :param eval_every: An int denoting how often to run the evaluation scoring on the validation set.
         :param results_folder: A location to save the results of training.
         :param use_amp: Whether to use automatic mixed-precision type casting during training.
-        :param use_latest_checkpoint: If set to True, then the latest checkpoint detected in the results
-            directory will be loaded in before training begins to pick up from where it was last left off.
+        :param use_latest_checkpoint: If set to 0, then no loading is done from disk automatically. If set to
+            1 then the model weights, opt, and scheduler will be loaded from the checkpoint directory before
+            training begins to pick up from where it was last left off. If set to 2, then only the weights
+            are loaded, but not the optimizer or scheduler.
         """
         super().__init__()
 
@@ -466,11 +468,13 @@ class TrainerCaptioning:
         self.all_losses = []  # Aggregate loss values during training
 
         # 7). Load in the latest checkpoint weights to continue from where the models were last saved
-        if use_latest_checkpoint:  # If set to True, then use the most recent checkpoint available
+        if use_latest_checkpoint > 0:  # If set to True, then use the most recent checkpoint available
             checkpoints = os.listdir(self.checkpoints_folder)
             if len(checkpoints) > 0:  # If there is a milestone saved, load in the weights
                 last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
-                self.load(last_checkpoint)  # Load in the most recent milestone to continue training
+                # Load in the most recent milestone to continue training
+                load_opt_and_scheduler = (use_latest_checkpoint == 1) # Load all if set to 1
+                self.load(last_checkpoint, load_opt_and_scheduler)
             else:  # Otherwise, check if there are any pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
                 pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
@@ -500,11 +504,13 @@ class TrainerCaptioning:
         # Save down all the loss values produced by model training since the last caching
         pd.Series(self.all_losses).to_csv(os.path.join(self.losses_folder, f"losses-{milestone}.csv"))
 
-    def load(self, milestone: int) -> None:
+    def load(self, milestone: int, load_opt_and_scheduler: bool = True) -> None:
         """
         Loads in the cached weights from disk for a particular milestone.
 
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
+        :param load_opt_and_scheduler: If True, then the optimizer and scheduler are also loaded from disk
+            along with the model weights.
         :returns: None. Weights and other trainer state parameter values are loaded into memory.
         """
         checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
@@ -515,8 +521,11 @@ class TrainerCaptioning:
         # read in from disk
         self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model"])
-        self.opt.load_state_dict(checkpoint_data["opt"])
-        self.scheduler.load_state_dict(checkpoint_data["scheduler"])
+        if load_opt_and_scheduler: # Only load if instructed
+            self.opt.load_state_dict(checkpoint_data["opt"])
+            self.scheduler.load_state_dict(checkpoint_data["scheduler"])
+        else:
+            self.logger.info("Optimizer and scheduler not loaded")
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
