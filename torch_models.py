@@ -141,7 +141,7 @@ class MultiHeadedAttention(nn.Module):
         attn_output = attn(query=data_1, key=data_2, value=data_2)
     """
 
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1, cross_attn: bool = False):
         """
         Initializes a MultiHeadedAttention layer. The hidden dimension of the key, query, and value vectors
         is set equal to embed_dim as per the usual convention.
@@ -149,14 +149,16 @@ class MultiHeadedAttention(nn.Module):
         :param embed_dim: The size of the embedding dimension of input tokens.
         :param num_heads: The number of attention heads to use when computing attention outputs.
         :param dropout: The probability of dropout used during training.
+        :param cross_attn: Denotes if this attention layer is a cross-attention layer, which only impacts how
+            the key-value cache is utilized to minimize redundant computations.
         """
         super().__init__()
 
         # Create linear transforms from input (token embeddings + positional embeddings) to key, query, and
         # value vectors using a nn.Linear layer to perform the matrix multiplication of learned weights
-        self.key = nn.Linear(embed_dim, embed_dim)
-        self.query = nn.Linear(embed_dim, embed_dim)
-        self.value = nn.Linear(embed_dim, embed_dim)
+        self.key_map = nn.Linear(embed_dim, embed_dim)
+        self.query_map = nn.Linear(embed_dim, embed_dim)
+        self.value_map = nn.Linear(embed_dim, embed_dim)
 
         self.proj = nn.Linear(embed_dim, embed_dim)  # A final projection layer after computing attention
         self.attn_drop = nn.Dropout(dropout)
@@ -168,8 +170,14 @@ class MultiHeadedAttention(nn.Module):
         assert self.embed_dim % self.num_heads == 0, msg
         self.head_dim = self.embed_dim // self.num_heads
 
+        self.is_cross_attn = cross_attn # Record a bool flag for whether this is a cross-attention layer,
+        # which impacts how the key-value caching is updated each step i.e. if it is cross-attention, then we
+        # don't update the kv cache after the first iteration i.e. the image patches need only be processed 1x
+        self.kv_cache = None # Cache key-value pairs to speed up auto-regressive rollouts
+
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
-                attn_mask: torch.Tensor = None, return_attn: bool = False) -> torch.Tensor:
+                attn_mask: torch.Tensor = None, return_attn: bool = False, step: bool = False
+                ) -> torch.Tensor:
         """
         Calculates the masked attention output for the provided input data, computes all attention heads in
         parallel for computational efficiency.
@@ -185,6 +193,7 @@ class MultiHeadedAttention(nn.Module):
         :param attn_mask: A tensor of shape (T, S) where mask[i, j] == 0 indicates that token i in the target
             should not be influenced by token j in the source.
         :param return_attn: If True, then the attention scores are output in addition to the tokens.
+        :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A tensor of shape (N, T, E) giving the weighted combination of the value vectors according
             to the attention weights computed using the key and query vectors.
         """
@@ -192,19 +201,51 @@ class MultiHeadedAttention(nn.Module):
         N, S, E = key.shape  # Source -> creates keys and value vectors
         N, T, E = query.shape  # Target -> creates query vectors
 
-        # Source (keys and values) reshape (N, S, E) -> (N, S, E/H, H)
-        K = self.key(key)  # (N, S, E) @ (E, E) = (N, S, E) convert to key vectors
-        K = K.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
-        K = torch.permute(K, (0, 2, 3, 1))  # Reshape to (N, H, E/H, S)
+        # We always compute the values below whether we are doing step-wise auto-regressive rollouts or not
+        # If not doing step-wise decoding, then this is exactly what we want to set up K, V, Q for attention
+        # calcs below. If we are doing step-wise decoding, then the input query is (N, T=1, E). If this is
+        # self-attention, then key and value are the same as query, if doing cross-attention, then the key
+        # and value vectors are the image patch embeddings
 
-        V = self.value(value)  # (N, S, E) @ (E, E) = (N, S, E) convert to value vectors
-        V = V.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
-        V = torch.permute(V, (0, 2, 1, 3))  # Reshape to (N, H, S, E/H)
-
-        # Target (queries) reshape (N, T, E) -> (N, H, T, E/H)
-        Q = self.query(query)  # (N, T, E) @ (E, E) = (N, T, E) convert to query vectors
+        # Target (queries) reshape (N, T, E) -> (N, H, T, E/H), these are always computed
+        Q = self.query_map(query)  # (N, T, E) @ (E, E) = (N, T, E) convert to query vectors
         Q = Q.reshape(N, T, self.num_heads, self.head_dim)  # Reshape to (N, T, H, E/H)
         Q = torch.permute(Q, (0, 2, 1, 3))  # Reshape to (N, H, T, E/H)
+
+        if step and self.is_cross_attn and self.kv_cache is not None: # If performing step-wise decoding and
+            # the KV cache is not empty, then no need to re-compute the KV values again, they're based on the
+            # image patches which have not changed since the last work token processed, extract from the cache
+            # directly
+            K, V = self.kv_cache
+
+        else:  # Otherwise, we will compute the KV values here based on the inputs. This is because:
+            # A). step is False so we want to compute them as normal
+            # B). step is True, this is cross-attention, the cache is empty so we need to fill it
+            # C). step is True, this is self-attention, the cache can be empty or not, either way we need to
+            #     update it with the most recent input provided
+
+            # In Cross-Attention: Keys and values are from the image patches, queries are word vectors
+            # In Self-Attention: Keys, values, and queries are all from word vectors or image patches
+
+            # Source (keys and values) reshape (N, S, E) -> (N, S, E/H, H)
+            K = self.key_map(key)  # (N, S, E) @ (E, E) = (N, S, E) convert to key vectors
+            K = K.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
+            K = torch.permute(K, (0, 2, 3, 1))  # Reshape to (N, H, E/H, S)
+
+            V = self.value_map(value)  # (N, S, E) @ (E, E) = (N, S, E) convert to value vectors
+            V = V.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
+            V = torch.permute(V, (0, 2, 1, 3))  # Reshape to (N, H, S, E/H)
+
+            if step: # Extract from the cache and update the cache if needed
+                if self.is_cross_attn and self.kv_cache is None:
+                    # If this is a cross-attention block and the cache is empty, store the computed KV values
+                    self.kv_cache = (K, V)
+                elif not self.is_cross_attn: # If this is self-attention instead, pull out what prior KV
+                    # values, append the new ones, and update the KV cache after appending the new vectors
+                    if self.kv_cache is not None: # If non-empty, append the new to the existing KV vectors
+                        K = torch.concat((self.kv_cache[0], K), dim=3)  # Concat along the S dimension
+                        V = torch.concat((self.kv_cache[1], V), dim=2)  # Concat along the S dimension
+                    self.kv_cache = (K, V)  # Update the cache after appending the new token vectors
 
         # Apply batch multiplication along the last 2 dimensions of these input tensors
         # (N, H, [T, E/H]) @ (N, H, [E/H, S]) = (N, H, T, S)
@@ -462,7 +503,7 @@ class TransformerEncoderLayer(nn.Module):
         :param ffn_dropout: The probability of dropout used during training for the feed forward network.
         """
         super().__init__()
-        self.self_attn = MultiHeadedAttention(embed_dim, num_heads, dropout)
+        self.self_attn = MultiHeadedAttention(embed_dim, num_heads, dropout, False)
         self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, ffn_dropout)
 
         self.norm_self_attn = nn.LayerNorm(embed_dim)
@@ -547,8 +588,8 @@ class TransformerDecoderLayer(nn.Module):
             components of the transformer blocks. Usually a higher amount of dropout is used here e.g. 0.2.
         """
         super().__init__()
-        self.self_attn = MultiHeadedAttention(embed_dim, num_heads, dropout)
-        self.cross_attn = MultiHeadedAttention(embed_dim, num_heads, dropout)
+        self.self_attn = MultiHeadedAttention(embed_dim, num_heads, dropout, False)
+        self.cross_attn = MultiHeadedAttention(embed_dim, num_heads, dropout, True)
         self.ffn = FeedForwardNetwork(embed_dim, ffn_dim, ffn_dropout)
 
         self.norm_self_attn = nn.LayerNorm(embed_dim)
@@ -559,7 +600,8 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout_cross_attn = nn.Dropout(dropout)
         self.dropout_ffn = nn.Dropout(ffn_dropout)
 
-    def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None,
+                step: bool = False) -> torch.Tensor:
         """
         Computes a forward pass through the decoder layer of the tgt input and tgt_mask.
 
@@ -567,6 +609,7 @@ class TransformerDecoderLayer(nn.Module):
         :param memory: The sequence input from the last layer of the encoder of shape (N, S, E).
         :param tgt_mask: Masks out parts of the target sequence which should not be attended to by earlier
             token embeddings within the target sequence.
+        :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A sequence of transformed features of shape (N, T, E).
         """
         x = tgt  # Name change for typical naming conventions
@@ -574,7 +617,7 @@ class TransformerDecoderLayer(nn.Module):
         # Self-attention sub-block
         residual = x  # Record for the residual connection below
         x = self.norm_self_attn(x)
-        x = self.self_attn(query=x, key=x, value=x, attn_mask=tgt_mask)
+        x = self.self_attn(query=x, key=x, value=x, attn_mask=tgt_mask, step=step)
         x = self.dropout_self_attn(x)
         x = x + residual  # Residual connection
 
@@ -582,7 +625,7 @@ class TransformerDecoderLayer(nn.Module):
         # there is no attention mask here since all input encoder values are visible to all decoder timesteps
         residual = x  # Record for the residual connection below
         x = self.norm_cross_attn(x)
-        x = self.cross_attn(query=x, key=memory, value=memory, attn_mask=None)
+        x = self.cross_attn(query=x, key=memory, value=memory, attn_mask=None, step=step)
         x = self.dropout_cross_attn(x)
         x = x + residual  # Residual connection
 
@@ -593,6 +636,13 @@ class TransformerDecoderLayer(nn.Module):
         x = x + residual  # Residual connection
 
         return x  # (N, T, E)
+
+    def clear_cache(self) -> None:
+        """
+        This method clears out the key-value cache and should be called before starting step-wise decoding.
+        """
+        self.self_attn.clear_cache()
+        self.cross_attn.clear_cache()
 
 
 class TransformerDecoder(nn.Module):
@@ -613,7 +663,8 @@ class TransformerDecoder(nn.Module):
         self.layers = clone(decoder_layer, num_layers)
         self.num_layers = num_layers
 
-    def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None,
+                step: bool = False) -> torch.Tensor:
         """
         Computes a forward pass through all layers of the decoder transformer, which attends the input tgt
         tokens to themselves (subject to tgt_mask) and also the memory tokens from the source sequence.
@@ -622,12 +673,20 @@ class TransformerDecoder(nn.Module):
         :param memory: The sequence input from the last layer of the encoder of shape (N, S, E).
         :param tgt_mask: Masks out parts of the target sequence which should not be attended to by earlier
             token embeddings within the target sequence.
+        :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A sequence of transformed features of shape (N, T, E).
         """
         x = tgt
         for layer in self.layers:
-            x = layer(x, memory, tgt_mask=tgt_mask)
+            x = layer(x, memory, tgt_mask=tgt_mask, step=step)
         return x
+
+    def clear_cache(self) -> None:
+        """
+        This method clears out the key-value cache and should be called before starting step-wise decoding.
+        """
+        for layer in self.layers: # Clear the cache from each transformer layer
+            layer.clear_cache()
 
 
 ###########################
@@ -1042,6 +1101,9 @@ class LanguageDecoder(nn.Module):
         return logit_scores  # (N, T, V) decoder_outputs
 
     def clear_cache(self) -> None:
+        """
+        This method clears out the key-value cache and should be called before starting step-wise decoding.
+        """
         self.img_features_cache = None
 
     def decode_step(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
@@ -1064,35 +1126,24 @@ class LanguageDecoder(nn.Module):
             # Also add in the positional encodings again so that the decoder has the spatial info of patches
             img_features += self.img_pos_embed_decoder  # (N, num_patches + 1, embed_dim), broadcasts dim=0
             self.img_features_cache = img_features # Cache for later re-use, no need to re-run every time
-        else: # Otherwise, reply on what's already in the cache instead
+        else: # Otherwise, rely on what's already in the cache instead of re-computing
             assert self.img_features_cache is not None, "img_features_cache is empty!"
             img_features = self.img_features_cache
 
-        # 4). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
-        # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
-        # Lower right triangular matrix of 1s to prevent lookahead
-        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device)
+        # 4). No attention mask needed because we're passing in the last token embedding vector only which
+        #     is allowed to see all others prior and itself so no masking needed, we're already using casual
+        #     attention by the step-wise rollout proceadure
+        tgt_mask = None
 
-        # 5). Pass the captions embeddings through a transformer block so that each word can attend to the
+        # 5). Pass the captions embeddings through the transformer blocks so that each word can attend to the
         # prior caption words (causal self-attention) and also to all the image features (cross-attention)
-        x = self.decoder(captions_emb, img_features, tgt_mask)  # (batch_size, T, embed_dim)
-
-
-        ### On the first run, pass in img_features and the first token
-        ### On the next runs, pass in the cumulative image tokens I guess
-
-        ### NEED TO FIX THE SINUSODIAL POSITIONAL EMBEDDINGS, USE ONLY THE LAST ONE
-        ### DECODER CACHING IS NEEDED
+        x = self.decoder(captions_emb[:, -1:, :], img_features, tgt_mask, step=True)  # (N, T=1, E)
 
         # 6). Map the transformer outputs to the vocab dim for a final word prediction at each time step
-        # (batch_size, T, embed_dim) @ (embed_dim, vocab_size) = (batch_size, T, vocab_size)
+        # (batch_size, T=1, embed_dim) @ (embed_dim, vocab_size) = (batch_size, T=1, vocab_size)
         logit_scores = self.vocab_proj(x)
 
-        return logit_scores  # (N, T, V) decoder_outputs
-
-
-
-
+        return logit_scores  # (N, T=1, V) decoder_outputs
 
     def forward(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
         """
@@ -1242,6 +1293,7 @@ class VisionLanguageModel(nn.Module):
 
         was_training = self.training
         self.train() if track_gradients else self.eval() # Switch to training mode if gradient tracking
+        self.decoder.clear_cache() # Clear out the KV cache values before starting this new batch
 
         with torch.set_grad_enabled(track_gradients):
 
@@ -1256,13 +1308,13 @@ class VisionLanguageModel(nn.Module):
             partial_captions = torch.full((N, 1), self._start, dtype=torch.long, device=imgs.device)
             log_probs_sum = torch.zeros(N, dtype=torch.float).to(self.device_param.device)
 
-            # Record True for each sentence in the batch if it has reached the </s> token
+            # Record True for each sentence in the batch if it has reached the </s> end token
             eos_mask = torch.zeros(N, dtype=bool, device=imgs.device)
             for t in range(max_len):  # Run the decoding time steps to fill in the caption word idx
                 # Predict the next token index for all images in the input batch
-                # TODO: could be made more efficient by using a key-value cache during decoding
-                logits = self.decoder(img_features, partial_captions)
-                logits = logits[:, -1, :]  # Use only the last timestep's embed values to make the next pred
+                logits = self.decoder.decode_step((img_features if t == 0 else None), partial_captions)
+                logits = logits[:, -1, :]  # Use only the last timestep's embed values to make the next
+                # word token prediction (N, vocab_size)
 
                 if temp == 0.0: # Then use the argmax for greedy decoding
                     # Choose the most likely word index from the vocabulary for each image, (N, V) -> (N, )
@@ -1287,6 +1339,7 @@ class VisionLanguageModel(nn.Module):
                 partial_captions = torch.cat([partial_captions, word_indices], dim=1)  # (N, t) -> (N, t+1)
 
         self.train() if was_training else self.eval()
+        self.decoder.clear_cache() # Clear out the KV cache values ater running
 
         if return_strings is False:  # Return as a np.ndarray
             return captions, log_probs_sum  # (N, T) = (batch_size, max_size), (N, ) float values

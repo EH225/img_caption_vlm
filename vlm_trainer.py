@@ -836,6 +836,7 @@ class TrainerCaptioning:
                         xe_loss = self.vlm.compute_loss(outputs, captions, eps)
 
                     loss = loss + lambda_xe * xe_loss
+                    del outputs, xe_loss
 
                 if self.amp_dtype == torch.float16:
                     scaler.scale(loss).backward()
@@ -908,6 +909,6 @@ class TrainerCaptioning:
                     self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
 
                 del batch, captions_gt, images, captions, greedy_captions, logprobs_g, sampled_captions
-                del logprobs_sum, greedy_rewards, sampled_rewards, advantages, loss, outputs, xe_loss
+                del logprobs_sum, greedy_rewards, sampled_rewards, advantages, loss
 
                 pbar.update(1)
