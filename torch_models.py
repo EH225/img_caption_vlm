@@ -917,7 +917,7 @@ class LanguageDecoder(nn.Module):
 
     def __init__(self, img_feature_shape: Tuple[int] = (512, 196), embed_dim: int = 512, num_layers: int = 3,
                  num_heads: int = 6, ffn_dim: int = 256, dropout: float = 0.1, ffn_dropout: float = 0.2,
-                 sp_model=None, max_length: int = 50):
+                 sp_model=None, max_len: int = 50):
         """
         Initializes a Language Transformer Model for processing prior word tokens and deep latent
         representations of the image patches to output predicted next words.
@@ -936,7 +936,7 @@ class LanguageDecoder(nn.Module):
             components of the transformer blocks. Usually a higher amount of dropout is used here e.g. 0.2.
         :param sp_model: A sentencepiece.SentencePieceProcessor model used to convert between tokens and
             strings.
-        :param max_length: An integer denoting the max length of a caption decoding during sampling.
+        :param max_len: An integer denoting the max length of a caption decoding during sampling.
         """
         super().__init__()
         # 1). Record input parameters
@@ -947,7 +947,7 @@ class LanguageDecoder(nn.Module):
         self.ffn_dim = ffn_dim  # Size of the hidden layer of the feed-forward neural nets
         self.dropout = dropout  # Dropout probability used during training
         self.ffn_dropout = ffn_dropout  # Dropout probability used in the FFNs of the transformer blocks
-        self.max_length = max_length  # Max caption decode output length
+        self.max_len = max_len  # Max caption decode output length
         self.vocab_size = len(sp_model)  # This in part determines the number of parameters in the model
         self.sp_model = sp_model
         # Record the word indices of special word tokens
@@ -963,7 +963,7 @@ class LanguageDecoder(nn.Module):
         # An embedding layer to convert word indices to word vectors
         self.word_idx_embed = nn.Embedding(self.vocab_size, embed_dim, padding_idx=self._pad)
         # A positional embedding layer for the positional indices of the work tokens
-        self.word_pos_embed = PositionalEmbedding(embed_dim, 0.05, max_length)
+        self.word_pos_embed = PositionalEmbedding(embed_dim, 0.05, max_len)
         # Construct the language decoder with cross-attention to the image patches embeddings from the encoder
         decoder_layer = TransformerDecoderLayer(embed_dim, num_heads, ffn_dim, dropout, ffn_dropout)
         self.decoder = TransformerDecoder(decoder_layer, num_layers)
@@ -1086,7 +1086,7 @@ class VisionLanguageModel(nn.Module):
         self.sp_model = decoder.sp_model
         self._pad = self.sp_model.pad_id()
         self._start, self._end = self.sp_model.bos_id(), self.sp_model.eos_id()
-        self.max_length = self.decoder.max_length
+        self.max_len = self.decoder.max_len
 
         # A dummy param to tracking the device of this model during later calls
         self.register_buffer('device_param', torch.empty(0))
@@ -1161,8 +1161,8 @@ class VisionLanguageModel(nn.Module):
         loss = -target_words_log_prob.sum() / target_masks[:, 1:].sum()  # Compute 1 torch.float loss value
         return loss
 
-    def sample(self, imgs: torch.Tensor, max_length: int = None, return_strings: bool = True
-               ) -> Union[np.ndarray, List[str]]:
+    def sample(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,
+               track_gradients: bool = False, temp: float = 0.0) -> Union[torch.Tensor, List[str]]:
         """
         Given an input batch of images, this method uses a greedy decoding approach to predict the image
         caption for each and outputs a np.ndarray of vocab word indices for each image in the image batch
@@ -1170,75 +1170,93 @@ class VisionLanguageModel(nn.Module):
         (sentences).
 
         :param imgs: A batch of input images of size (N, C, H, W).
-        :param max_length: The max length of any caption generated.
-        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+        :param max_len: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_len) is returned denoting
             the predicted word token indices for the decoded captions. If True, then this method returns a
             list of length N containing strings for each caption.
+        :param track_gradients: If set to True, then gradients are tracked through the returned log probs.
+        :param temp: A temperature parameter used to sample from the predicted distribution of probabilities
+            of the next token at each timestep. Set to 0 for greedy decoding, set higher for more uniform
+            sampling i.e. more creative and varied responses.
         :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
-        max_length = self.decoder.max_length if max_length is None else max_length
-        self.eval()  # Switch to eval mode to turn off dropout
+        assert temp >= 0, f"temp must be a value >= 0, got {temp}"
+        max_len = self.decoder.max_len if max_len is None else max_len
 
-        with torch.no_grad():  # Used for inference, no gradient tracking required
+        was_training = self.training
+        self.train() if track_gradients else self.eval() # Switch to training mode if gradient tracking
+
+        with torch.set_grad_enabled(track_gradients):
+
             N = imgs.shape[0]  # The number of images in the batch
             img_features = self.encoder(imgs)  # Process the images and generate image features (N, S, E)
 
             # Create an empty captions tensor to record the outputs, where all tokens are NULL initially
-            captions = self._pad * np.ones((N, max_length), dtype=np.int32)  # Record ints (N, max_len)
+            captions = torch.full((N, max_len), self._pad, dtype=torch.long,
+                                  device=imgs.device)  # Record ints (N, max_len)
 
             # Create a starting partial caption to begin to decoding sequence for each using the start token
-            partial_captions = self._start * np.ones(N, dtype=np.int32)  # (N, )
-            partial_captions = torch.LongTensor(partial_captions).to(self.device_param.device)
-            partial_captions = partial_captions.unsqueeze(1)  # (N, 1) = (batch_size, decode seq len)
+            partial_captions = torch.full((N, 1), self._start, dtype=torch.long, device=imgs.device)
+            log_probs_sum = torch.zeros(N, dtype=torch.float).to(self.device_param.device)
 
             # Record True for each sentence in the batch if it has reached the </s> token
-            eos_mask = np.zeros(N, dtype=bool)
-            for t in range(max_length):  # Run the decoding time steps to fill in the caption word idx
+            eos_mask = torch.zeros(N, dtype=bool, device=imgs.device)
+            for t in range(max_len):  # Run the decoding time steps to fill in the caption word idx
                 # Predict the next token index for all images in the input batch
                 # TODO: could be made more efficient by using a key-value cache during decoding
-                output_logits = self.decoder(img_features, partial_captions)
-                output_logits = output_logits[:, -1, :]  # Use only the last timestep's embedding values to
-                # make the next token prediction
+                logits = self.decoder(img_features, partial_captions)
+                logits = logits[:, -1, :]  # Use only the last timestep's embed values to make the next pred
 
-                # Choose the most likely word index from the vocabulary for each image, (N, V) -> (N, )
-                word_indices = torch.argmax(output_logits, axis=1)  # (N, )
+                if temp == 0.0: # Then use the argmax for greedy decoding
+                    # Choose the most likely word index from the vocabulary for each image, (N, V) -> (N, )
+                    word_indices = torch.argmax(logits, axis=1)  # (N, )
+                else: # Otherwise randomly sample from the distribution of predicted next word tokens
+                    # Apply the temperature scaling and sample
+                    probs = F.softmax(logits / temp, dim=-1) # (N, V), apply softmax along vocab dim
+                    word_indices = torch.multinomial(probs, num_samples=1).squeeze(1)  # (N, )
 
                 # Update the captions output and the current partial captions tensor
-                captions[:, t] = word_indices.cpu().numpy()
+                captions[:, t] = word_indices
                 captions[eos_mask, t] = self._pad  # Replace with the padding token beyond </s>
-                eos_mask = eos_mask & (captions[:, t] == self._end)  # Update the end of sentence bool flags
+                log_probs = torch.log_softmax(logits, dim=-1)  # (N, V) log probs for each next token pred
+                eos_mask = eos_mask | (captions[:, t] == self._end)  # Update the end of sentence bool flags
+                selected_logprob = log_probs.gather(1, word_indices.unsqueeze(1)).squeeze(1)   # (N,)
+                log_probs_sum += selected_logprob * (~eos_mask).float() # Add the log probs of these new token
+                # predictions for each caption, zero out the entires that are the end or padding tokens
                 if eos_mask.sum() == len(eos_mask):  # Stop early if all outputs have reached their </s> token
                     break
 
                 word_indices = word_indices.unsqueeze(1)  # (N, 1)
                 partial_captions = torch.cat([partial_captions, word_indices], dim=1)  # (N, t) -> (N, t+1)
 
-        if return_strings is False:  # Return as a np.ndarray
-            return captions  # (N, T) = (batch_size, max_size)
-        else:  # Return as a list of strings, process each sentence into plaintext
-            return [decode_caption(x, self.sp_model) for x in captions]
+        self.train() if was_training else self.eval()
 
-    def _beam_search(self, img: torch.Tensor, beam_size: int = 5, alpha: float = 0.7, max_length: int = None,
-                     return_string: bool = True) -> Union[np.ndarray, List[str]]:
+        if return_strings is False:  # Return as a np.ndarray
+            return captions, log_probs_sum  # (N, T) = (batch_size, max_size), (N, ) float values
+        else:  # Return as a list of strings, process each sentence into plaintext and the sum of log probs
+            return [decode_caption(x, self.sp_model) for x in captions], log_probs_sum
+
+    def _beam_search(self, img: torch.Tensor, max_len: int = None, return_string: bool = True,
+                     beam_size: int = 5, alpha: float = 0.7) -> Union[np.ndarray, List[str]]:
         """
         Given a single input image of size (1, C, H, W), this method uses beam search to predict the image
         caption and outputs a np.ndarray of vocab word indices for the image or a single string that is the
         decoded word tokens.
 
         :param img: A single input image of size (1, C, H, W).
-        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
-        :param alpha: A length normalization parameter that penalizes very short caption decodings.
-        :param max_length: The max length of any caption generated.
-        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+        :param max_len: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_len) is returned denoting
             the predicted word token indices for the decoded captions. If True, then this method returns a
             list of length N containing strings for each caption.
+        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
+        :param alpha: A length normalization parameter that penalizes very short caption decodings.
         :returns: A np.ndarray of size (1, T) containing the integer word indices of the predicted caption
             or a caption sentence as a string.
         """
         assert img.shape[0] == 1, "Beam search expects batch size = 1"
 
-        max_length = self.max_length if max_length is None else max_length
+        max_len = self.max_len if max_len is None else max_len
         self.eval()  # Switch to eval mode to turn off dropout
 
         with torch.no_grad():  # Used for inference, no gradient tracking required
@@ -1247,7 +1265,7 @@ class VisionLanguageModel(nn.Module):
             # Each beam contains: (token_ids, log_prob, finished_flag)
             beams = [(torch.tensor([[self._start]], device=self.device_param.device), 0.0, False)]
 
-            for i in range(max_length):
+            for i in range(max_len):
                 new_beams = []
 
                 for tokens, log_prob, finished in beams:  # Extend the existing beams by 1 more token
@@ -1278,25 +1296,28 @@ class VisionLanguageModel(nn.Module):
 
             best_tokens = beams[0][0].squeeze(0).cpu().numpy()  # Already sorted by log_prob / length ** alpha
 
+        self.train() # Make sure the model is in training mode before exiting
         return decode_caption(best_tokens, self.sp_model) if return_string else best_tokens
 
-    def beam_search(self, imgs: torch.Tensor, beam_size: int = 5, alpha: float = 0.7, max_length: int = None,
-                    return_strings: bool = True) -> Union[np.ndarray, List[str]]:
+    def beam_search(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,
+                    beam_size: int = 5, alpha: float = 0.7, ) -> Union[np.ndarray, List[str]]:
         """
         Given an input batch of images, this method uses beam search to predict the image caption for each
         and outputs a np.ndarray of vocab word indices for each image in the image batch detailing what
         image caption would be predicted by the model for each or a list of strings (sentences).
 
         :param imgs: A batch of input images of size (N, C, H, W).
-        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
-        :param alpha: A length normalization parameter that penalizes very short caption decodings.
-        :param max_length: The max length of any caption generated.
-        :param return_strings: If False, a tensor of ints of size (N, T <= max_length) is returned denoting
+        :param max_len: The max length of any caption generated.
+        :param return_strings: If False, a tensor of ints of size (N, T <= max_len) is returned denoting
             the predicted word token indices for the decoded captions. If True, then this method returns a
             list of length N containing strings for each caption.
+        :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
+        :param alpha: A length normalization parameter that penalizes very short caption decodings.
         :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
-        outputs = [self._beam_search(imgs[i:i + 1], beam_size, alpha, max_length, return_strings)
+        was_training = self.training
+        outputs = [self._beam_search(imgs[i:i + 1], beam_size, alpha, max_len, return_strings)
                    for i in range(imgs.shape[0])]
+        self.train() if was_training else self.eval()
         return outputs if return_strings else torch.cat(outputs, dim=0)

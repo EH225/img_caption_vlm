@@ -79,6 +79,41 @@ def train_captioning_model(config: Dict) -> None:
                   max_len=config["TrainerCaptioning"].get("max_len", 50))
 
 
+def train_scst(config: Dict) -> None:
+    """
+    Runs Self-Critical Sequence Training (SCST) to improve CIDEr scores of a pre-trained model.
+
+    :param config: A config dictionary containing parameters for various aspects of the training loop and
+        model parameters for how to configure the model parameters.
+    :returns: None. Results are saved to disk.
+    """
+    # 1). Read in the sub-word sentence piece vocab model derived from the training captions
+    sp_model = spm.SentencePieceProcessor()
+    sp_model.load(os.path.join(config["dataset_dir"], "vocab.model"))
+
+    # 2).Init the encoder and decoder model for training and use them to create a vision-language model
+    vlm = VisionLanguageModel(encoder=ImageEncoder(**config.get("ImageEncoder", {})),
+                              decoder=LanguageDecoder(sp_model=sp_model, **config.get("LanguageDecoder", {})))
+
+    # 3). Construct the COCO training dataset loader and validation dataset loader
+    dataloader_train = get_dataloader(split='train', include_captions=True,
+                                      **config.get("DataLoaderTrain", {}))
+    dataloader_val = get_dataloader(split='val', include_captions=True,
+                                    **config.get("DataLoaderVal", {}))
+    with open(os.path.join(config["dataset_dir"], 'gts_val.json'), 'r') as f:
+        gts_val = json.load(f)  # Load in the dictionary of ground-truth val set captions
+
+    # 4). Configure the training pipeline with the trainer object
+    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_val,
+                                **config.get("TrainerCaptioning", {}))
+
+    # 5). Train the model to completion
+    trainer.train_scst(eps=config["TrainerCaptioning"].get("eps", 0.1),
+                       max_len=config["TrainerCaptioning"].get("max_len", 50),
+                       lambda_xe=config["TrainerCaptioning"].get("lambda_xe", 0.1))
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training Pipeline Module")
     parser.add_argument("--config", help="The name of the config file to use for training")
@@ -92,5 +127,6 @@ if __name__ == "__main__":
         if os.path.exists(debug_results_dir):  # Check if the output results directory exists
             shutil.rmtree(debug_results_dir)  # Remove entire results directory
 
-    pre_train_mae(config)  # Run model pre-training
-    train_captioning_model(config)  # Run model training
+    # pre_train_mae(config)  # Run model pre-training
+    # train_captioning_model(config)  # Run model training
+    train_scst(config) # Run SCST fine-tuning on the pre-trained model

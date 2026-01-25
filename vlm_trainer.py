@@ -440,6 +440,7 @@ class TrainerCaptioning:
         self.dataloader_val = dataloader_val
         # A dictionary of image captions for periodic eval vs the validation set
         self.gts_val = {int(k): v for k, v in gts_val.items()}
+        self.cider_scorer = Cider()  # Used for computing CIDEr scores
 
         # 4). Configure the optimizer for training - segment the encoder training parameters from the decoder
         self.encoder_params = list(self.vlm.encoder.parameters())
@@ -590,9 +591,9 @@ class TrainerCaptioning:
         val_loss = overall_loss / total_n  # Compute the avg per token negative log likelihood
         val_ppl = np.exp(val_loss)  # Compute the perplexity
 
-        cider = Cider()  # Compute the CIDEr score using the COCO utils
+        # Compute the CIDEr score using the COCO utils
         gts_val = {img_id: self.gts_val[img_id] for img_id in res.keys()}
-        val_cider, _ = cider.compute_score(gts_val, res)
+        val_cider, _ = self.cider_scorer.compute_score(gts_val, res)
 
         self.vlm.train()  # Set back to train mode to re-enable dropout etc.
         return val_loss, val_ppl, val_cider
@@ -724,3 +725,177 @@ class TrainerCaptioning:
 
                 pbar.update(1)
 
+    def train_scst(self, eps: float = 0.1, max_len: int = 50, lambda_xe: float = 0.1) -> None:
+        """
+        Runs the training of the model until completion for self.train_num_steps total training iterations
+        using a Self-Critical Sequence Training (SCST) approach to improve CIDEr scores.
+
+        :param eps: A smoothing parameter used during decoding to smooth the probability distribution
+            predicted by the model over the vocabulary space.
+        :param max_len: Sets the max length of the sampled captions during training which are periodically
+            printed to show the model's progress and also for the periodic eval runs on the validation set.
+        :param lambda_xe: Allows the SCST loss to be augmented with lambda_xe * xe_loss for stability. Set to
+            0.0 to skip entirely.
+        :returns: None. Caches the results to disk.
+        """
+        if self.step < self.freeze_steps:  # Freeze the encoder params for the first initial training steps
+            for p in self.encoder_params:
+                p.requires_grad = False
+            self.logger.info(f"Image encoder parameters are frozen at step={self.step}")
+        assert all(p.requires_grad for p in self.decoder_params)  # Should be always trainable
+
+        self.logger.info(f"Starting SCST Training, device={self.device}, amp_dtype={self.amp_dtype}")
+        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and weight decay
+            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
+            break  # Show for only the first parameter group, assume all are the same
+
+        self.vlm.to(self.device)  # Move the model to the correct device
+        self.vlm.train()  # Make sure to set the model to train mode for training
+
+        # These data-loaders do not cache batches which makes them more memory efficient
+        inf_dataloader_train = infinite_loader(self.dataloader_train)
+        inf_dataloader_val = infinite_loader(self.dataloader_val)
+
+        if self.amp_dtype is not None:
+            if self.device.type != 'cuda':
+                self.logger.info("AMP with FP16 requires CUDA")
+                self.amp_dtype = None
+            else:
+                scaler = torch.amp.GradScaler('cuda')
+
+        with tqdm(initial=self.step, total=self.train_num_steps) as pbar:
+
+            while self.step < self.train_num_steps:  # Run until all training iterations are complete
+                # Get the next training batch and move it to the same device as the model
+                batch = next(inf_dataloader_train)
+                images = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
+                captions_gt = {int(img_id): decode_caption(c, self.vlm.sp_model)
+                               for img_id, c in zip(batch["image_names"], batch["captions"])}
+                captions = batch["captions"].to(self.device, non_blocking=True)  # (N, tgt_max_len)
+
+                self.opt.zero_grad(set_to_none=True)  # Zero the grads of the opt before computing the loss
+                # Compute the forward-pass through the model and compute a tensor that is the same shape
+                # along the first 2 dims as captions but also gives the prob dist across the vocab
+
+                # 1). Generate baseline image captions using greedy decoding, produce a list of strings
+                with torch.no_grad():
+                    if self.amp_dtype is not None:
+                        with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                            greedy_captions, _ = self.vlm.sample(images, max_len=50, return_strings=True,
+                                                              track_gradients=False, temp=0.0)
+                    else:
+                        greedy_captions, _ = self.vlm.sample(images, max_len=50, return_strings=True,
+                                                             track_gradients=False, temp=0.0)
+                # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
+                greedy_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
+                                                                         greedy_captions)}
+
+                # 2). Sample exploratory captions i.e. the policy rollout - track gradients here, gives us
+                # sequences sampled from the distribution of next predicted words, not just the greedy
+                # selection of the top most probably each step
+                if self.amp_dtype is not None:
+                    with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                        sampled_seqs, sampled_logprobs = self.vlm.sample(images, max_len=50,
+                                                                         return_strings=True,
+                                                                         track_gradients=True, temp=0.0)
+                else:
+                    sampled_captions, logprobs_sum = self.vlm.sample(images, max_len=50, return_strings=True,
+                                                                     track_gradients=True, temp=0.0)
+                # sampled_seqs is a list of strings of length N and sampled_logprobs is a torch.Tensor of
+                # float values of length N which has gradient tracking for computing the loss below
+
+                # 3). Compute rewards, the CIDEr difference between the greedy and exploratory captions
+                # The CIDEr scorer expects a dictionary of format {image_id: [string1, string2 ...], ...}
+                greedy_rewards = self.cider_scorer.compute_score(refs=captions_gt, hyps=greedy_captions)[1]
+                sampled_rewards = self.cider_scorer.compute_score(refs=captions_gt, hyps=sampled_captions)[1]
+
+                # Advantage = sampled - baseline (hence self-critical)
+                advantages = sampled_rewards - greedy_rewards  # Size N = batch_size
+                # Normalize the advantages to reduce variance
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # 4). Compute the SCST loss = (-1) * mean( advantage * log_prob )
+                loss = (-1) * (advantages * logprobs_sum).mean()
+
+                # 5). Compute a small cross-entropy loss as well for stability (a hybrid loss)
+                if lambda_xe > 0: # If zero, then no weight so skip computing
+                    if self.amp_dtype is not None:
+                        with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                            outputs = self.vlm(images, captions)  # (N, T, V)
+                            xe_loss = self.vlm.compute_loss(outputs, captions, eps)
+                    else:
+                        outputs = self.vlm(images, captions)  # (N, T, V)
+                        xe_loss = self.vlm.compute_loss(outputs, captions, eps)
+
+                    loss = loss + lambda_xe * xe_loss
+
+                if self.amp_dtype == torch.float16:
+                    scaler.scale(loss).backward()
+                    if self.grad_clip is not None:
+                        scaler.unscale_(self.opt)  # Unscale before clipping
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                    scaler.step(self.opt)  # Update the model parameters by taking a gradient step
+                    scaler.update()
+                else:
+                    loss.backward()
+                    if self.grad_clip is not None:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                    self.opt.step()  # Update the model parameters by taking a gradient step
+
+                pbar.set_postfix(loss=f"{loss.item():.4f}", grad=f"{grad_norm:.3f}",
+                                 mean_greedy_cider=f"{greedy_rewards.mean():3f}")
+
+                self.scheduler.step()  # Update the learning rate scheduler
+                self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
+
+                self.step += 1
+
+                # Periodically save the model weights to disk
+                if self.step % self.save_every == 0 or self.step == self.train_num_steps:
+                    self.save(self.step)
+                    plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
+                    self.all_losses = []  # Clear the list of losses after each save, store only the ones
+                    # from the last save to the next save
+                    torch.cuda.empty_cache()
+
+                # Periodically compute performance metrics on the eval dataset
+                if self.step % self.eval_every == 0 or self.step == self.train_num_steps:
+                    val_loss, val_ppl, val_cider = self.compute_eval_scores(max_len)
+                    msg = f"Validation Set NLL: {val_loss:.3f} PPL: {val_ppl:.3f} CIDEr: {val_cider:.3f}"
+                    self.logger.info(msg)
+
+                # Periodically generate samples from the model
+                if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
+                    # Periodically log the loss and other training metrics
+                    self.logger.info((f"loss={loss.item():.4f}, grad={grad_norm:.3f}, "
+                                      f"mean_greedy_cider={greedy_rewards.mean():.3f}"))
+                    gpu_mem_used = torch.cuda.memory_allocated() / 1e9
+                    cpu_mem_used = psutil.virtual_memory().used / 1e9
+                    msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
+                    self.logger.info(msg)
+
+                    self.logger.info("\n")
+                    self.logger.info(f"Generating samples at step={self.step}")
+                    batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
+                    indices = torch.randperm(batch["images"].size(0))[:self.num_sample]
+                    images = batch["images"][indices].to(self.device)
+                    captions = batch["captions"][indices].to(self.device)
+                    image_names = [batch["image_names"][int(idx)] for idx in indices]
+                    pred_captions = self.vlm.sample(images, max_len, True)  # (N, T)
+                    actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
+                    # Print some side-by-side comparisons of the predicted vs actual captions
+                    for yhat, y, img_name in zip(pred_captions, actual_captions, image_names):
+                        self.logger.info(f"Image:     {img_name}")
+                        self.logger.info(f"Predicted: {yhat}")
+                        self.logger.info(f"Actual:    {y}")
+                    self.logger.info("\n")
+                    self.vlm.train()  # Switch back to training mode once finished
+
+                # Check if beyond the initial freeze steps period to unfreeze the encoder params
+                if self.step == self.freeze_steps:  # Unfreeze the parameters of the image encoder
+                    for p in self.encoder_params:
+                        p.requires_grad = True
+                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
+                del outputs, loss, images, captions
+
+                pbar.update(1)
