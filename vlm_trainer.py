@@ -798,7 +798,7 @@ class TrainerCaptioning:
                 # selection of the top most probably each step
                 if self.amp_dtype is not None:
                     with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                        sampled_captions, sampled_logprobs = self.vlm.sample(images, max_len=50,
+                        sampled_captions, logprobs_sum = self.vlm.sample(images, max_len=50,
                                                                              return_strings=True,
                                                                              track_gradients=True, temp=0.0)
                 else:
