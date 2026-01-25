@@ -95,13 +95,15 @@ def train_scst(config: Dict) -> None:
     vlm = VisionLanguageModel(encoder=ImageEncoder(**config.get("ImageEncoder", {})),
                               decoder=LanguageDecoder(sp_model=sp_model, **config.get("LanguageDecoder", {})))
 
-    # 3). Construct the COCO training dataset loader and validation dataset loader
+    # 3). Construct the COCO training dataset loader and validation dataset loader + read in caption dicts
     dataloader_train = get_dataloader(split='train', include_captions=True,
                                       **config.get("DataLoaderTrain", {}))
     dataloader_val = get_dataloader(split='val', include_captions=True,
                                     **config.get("DataLoaderVal", {}))
     with open(os.path.join(config["dataset_dir"], 'gts_val.json'), 'r') as f:
         gts_val = json.load(f)  # Load in the dictionary of ground-truth val set captions
+    with open(os.path.join(config["dataset_dir"], 'gts_train.json'), 'r') as f:
+        gts_train = json.load(f)  # Load in the dictionary of ground-truth val set captions
 
     # 4). Configure the training pipeline with the trainer object
     trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_train=gts_train, gts_val=gts_val,

@@ -771,7 +771,7 @@ class TrainerCaptioning:
             while self.step < self.train_num_steps:  # Run until all training iterations are complete
                 # Get the next training batch and move it to the same device as the model
                 batch = next(inf_dataloader_train)
-                captions_gt = {img_id: self.gts_train[img_id] for img_id in batch["image_names"]}
+                captions_gt = {int(img_id): self.gts_train[int(img_id)] for img_id in batch["image_names"]}
                 images = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
                 captions = batch["captions"].to(self.device, non_blocking=True)  # (N, tgt_max_len)
 
@@ -811,29 +811,14 @@ class TrainerCaptioning:
 
                 # 3). Compute rewards, the CIDEr difference between the greedy and exploratory captions
                 # The CIDEr scorer expects a dictionary of format {image_id: [string1, string2 ...], ...}
-
-                print("greedy_captions")
-                print(greedy_captions)
-
-                print("sampled_captions")
-                print(sampled_captions)
-
-                print("captions_gt")
-                print(captions_gt)
-
-
                 greedy_rewards = self.cider_scorer.compute_score(captions_gt, greedy_captions)[1]
                 sampled_rewards = self.cider_scorer.compute_score(captions_gt, sampled_captions)[1]
 
-                print("greedy_reward avg", greedy_rewards.mean())
-                print("sampled_rewards avg", sampled_rewards.mean())
-
                 # Advantage = sampled - baseline (hence self-critical)
-                print("type(sampled_rewards)", type(sampled_rewards))
-                print("type(greedy_rewards)", type(greedy_rewards))
                 advantages = sampled_rewards - greedy_rewards  # Size N = batch_size
                 # Normalize the advantages to reduce variance
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = torch.tensor(advantages, device=logprobs_sum.device)  # Move to torch tensor
 
                 # 4). Compute the SCST loss = (-1) * mean( advantage * log_prob )
                 loss = (-1) * (advantages * logprobs_sum).mean()
@@ -864,7 +849,8 @@ class TrainerCaptioning:
                     self.opt.step()  # Update the model parameters by taking a gradient step
 
                 pbar.set_postfix(loss=f"{loss.item():.4f}", grad=f"{grad_norm:.3f}",
-                                 mean_greedy_cider=f"{greedy_rewards.mean():3f}")
+                                 mean_greedy_CIDEr=f"{greedy_rewards.mean():.3f}",
+                                 mean_sampled_CIDEr=f"{sampled_rewards.mean():.3f}")
 
                 self.scheduler.step()  # Update the learning rate scheduler
                 self.all_losses.append(loss.item())  # Aggregate all the loss values for each timestep
