@@ -96,8 +96,8 @@ def train_scst(config: Dict) -> None:
                               decoder=LanguageDecoder(sp_model=sp_model, **config.get("LanguageDecoder", {})))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader + read in caption dicts
-    config["DataLoaderTrain"]["batch_size"] = max(config["DataLoaderTrain"]["batch_size"], 128)
-    config["DataLoaderVal"]["batch_size"] = max(config["DataLoaderVal"]["batch_size"], 128)
+    config["DataLoaderTrain"]["batch_size"] = min(config["DataLoaderTrain"]["batch_size"], 128)
+    config["DataLoaderVal"]["batch_size"] = min(config["DataLoaderVal"]["batch_size"], 128)
     dataloader_train = get_dataloader(split='train', include_captions=True,
                                       **config.get("DataLoaderTrain", {}))
     dataloader_val = get_dataloader(split='val', include_captions=True,
