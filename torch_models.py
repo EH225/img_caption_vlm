@@ -976,6 +976,9 @@ class LanguageDecoder(nn.Module):
         # 3). Initialize the weights of the network randomly
         self.apply(self._init_weights)
 
+        # 4). Set up a local cache
+        self.img_features_cache = None
+
     def _init_weights(self, module):
         """
         Initialize the weights of the network.
@@ -1037,6 +1040,59 @@ class LanguageDecoder(nn.Module):
         logit_scores = self.vocab_proj(x)
 
         return logit_scores  # (N, T, V) decoder_outputs
+
+    def clear_cache(self) -> None:
+        self.img_features_cache = None
+
+    def decode_step(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Same as decode but useful for auto-regressive roll out sampling
+        """
+        N, T = word_idx_seq.shape  # N examples (batch size), each of at most length T
+
+        # 1). Convert the captions (encoded as integers) into word embeddings using the embedding layer
+        captions_emb = self.word_idx_embed(word_idx_seq)  # (batch_size, max_len, embed_dim) = (N, T, E)
+
+        # 2). Add positional encodings to the captions embeddings
+        captions_emb = self.word_pos_embed(captions_emb)  # (batch_size, max_len, embed_dim) = (N, T, E)
+
+        if img_features is not None: # Only re-compute and update if not None
+            # 3). Apply a projection to the img_features before feeding them into the cross-attention layer
+            # nn.Linear(patch_embed_dim, embed_dim): (batch_size, img_feat_dim) -> (batch_size, wordvec_dim)
+            # then also apply layer norm before cross-attention
+            img_features = self.visual_projection(img_features)  # (batch_size, num_patches, embed_dim)
+            # Also add in the positional encodings again so that the decoder has the spatial info of patches
+            img_features += self.img_pos_embed_decoder  # (N, num_patches + 1, embed_dim), broadcasts dim=0
+            self.img_features_cache = img_features # Cache for later re-use, no need to re-run every time
+        else: # Otherwise, reply on what's already in the cache instead
+            assert self.img_features_cache is not None, "img_features_cache is empty!"
+            img_features = self.img_features_cache
+
+        # 4). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
+        # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
+        # Lower right triangular matrix of 1s to prevent lookahead
+        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device)
+
+        # 5). Pass the captions embeddings through a transformer block so that each word can attend to the
+        # prior caption words (causal self-attention) and also to all the image features (cross-attention)
+        x = self.decoder(captions_emb, img_features, tgt_mask)  # (batch_size, T, embed_dim)
+
+
+        ### On the first run, pass in img_features and the first token
+        ### On the next runs, pass in the cumulative image tokens I guess
+
+        ### NEED TO FIX THE SINUSODIAL POSITIONAL EMBEDDINGS, USE ONLY THE LAST ONE
+        ### DECODER CACHING IS NEEDED
+
+        # 6). Map the transformer outputs to the vocab dim for a final word prediction at each time step
+        # (batch_size, T, embed_dim) @ (embed_dim, vocab_size) = (batch_size, T, vocab_size)
+        logit_scores = self.vocab_proj(x)
+
+        return logit_scores  # (N, T, V) decoder_outputs
+
+
+
+
 
     def forward(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
         """

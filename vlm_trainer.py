@@ -784,11 +784,12 @@ class TrainerCaptioning:
                 with torch.no_grad():
                     if self.amp_dtype is not None:
                         with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                            greedy_captions, _ = self.vlm.sample(images, max_len=50, return_strings=True,
-                                                              track_gradients=False, temp=0.0)
+                            greedy_captions, logprobs_g = self.vlm.sample(images, max_len=50,
+                                                                          return_strings=True,
+                                                                          track_gradients=False, temp=0.0)
                     else:
-                        greedy_captions, _ = self.vlm.sample(images, max_len=50, return_strings=True,
-                                                             track_gradients=False, temp=0.0)
+                        greedy_captions, logprobs_g = self.vlm.sample(images, max_len=50, return_strings=True,
+                                                                      track_gradients=False, temp=0.0)
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
                 greedy_captions = {int(img_id): [cider_clean(c)] for img_id, c in zip(batch["image_names"],
                                                                                    greedy_captions)}
@@ -906,6 +907,7 @@ class TrainerCaptioning:
                         p.requires_grad = True
                     self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
 
-                del images, captions, advantages, logprobs_sum, loss
+                del batch, captions_gt, images, captions, greedy_captions, logprobs_g, sampled_captions
+                del logprobs_sum, greedy_rewards, sampled_rewards, advantages, loss, outputs, xe_loss
 
                 pbar.update(1)

@@ -329,8 +329,8 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
         num_workers, pin_memory, persistent_workers, prefetch_factor = 4, True, True, 16
     else:
         num_workers, pin_memory, persistent_workers, prefetch_factor = 0, False, False, None
-    print("num_workers, pin_memory, persistent_workers, prefetch_factor:",
-          num_workers, pin_memory, persistent_workers, prefetch_factor)
+    print("num_workers, pin_memory, persistent_workers, prefetch_factor, batch_size:",
+          num_workers, pin_memory, persistent_workers, prefetch_factor, batch_size)
     # num_workers, pin_memory, persistent_workers = 0, False, False
     return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                       pin_memory=pin_memory, persistent_workers=persistent_workers,
