@@ -905,6 +905,7 @@ class TrainerCaptioning:
                     for p in self.encoder_params:
                         p.requires_grad = True
                     self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
-                del outputs, loss, images, captions
+
+                del images, captions, advantages, logprobs_sum, loss
 
                 pbar.update(1)
