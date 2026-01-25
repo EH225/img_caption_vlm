@@ -75,7 +75,7 @@ TrainerSCST:
     lr_end: 1.0e-6
     wd_encoder: 0.05
     wd_decoder: 0.01
-    train_num_steps: 10000
+    train_num_steps: 20000
     warm_up_pct: 0.10
     frozen_enc_pct: 0.20
     grad_clip: 1.0
