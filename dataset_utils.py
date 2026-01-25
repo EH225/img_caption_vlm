@@ -11,15 +11,16 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from PIL import Image
-import random
+import random, json
 import torch
+from collections import defaultdict
 import torchvision.transforms as transforms
 from torchvision.transforms import functional as F
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Dict, List
 from pycocotools.coco import COCO
-from utils import get_device
+from utils import get_device, cider_clean
 
 
 ############################
@@ -176,6 +177,24 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
     # 4). Save the results to disk to complete the captions pre-processing
     os.makedirs(os.path.dirname(output_path), exist_ok=True)  # Make this directory if it doesn't yet exist
     torch.save(output_dict, output_path)
+
+def save_gts_dict(captions_path: str, output_path: str) -> None:
+    """
+    Extracts the captions from a given captions file and saves them to disk after cleaning them for CIDEr
+    evaluation. Saves a dictionary of captions in the format {image_id: [caption_str1, caption_str2, ...]}
+    """
+    # Read in the caption data to be tokenized
+    coco_data = COCO(captions_path)
+    image_ids = coco_data.getImgIds()
+    # Create a list of dictionaries, one for each training image in the dataset
+    caption_dicts = [coco_data.loadAnns(coco_data.getAnnIds(imgIds=img_id)) for img_id in image_ids]
+
+    # Create an output dictionary in json format
+    output = defaultdict(list)
+    for d in caption_dicts:
+        for x in d:
+            output[x["image_id"]].append(cider_clean(clean_caption(x["caption"])))
+    json.dump(output, open(output_path, "w", encoding="utf-8"), indent=4)
 
 
 ####################
@@ -345,3 +364,4 @@ if __name__ == "__main__":
         vocab_model_path = os.path.join(dataset_dir, "preprocessed/vocab.model")
         output_path = os.path.join(dataset_dir, f"preprocessed/captions/{split}_captions.pt")
         tokenize_captions(captions_path, vocab_model_path, output_path, max_tokens=max_tokens_per_caption)
+        save_gts_dict(captions_path, os.path.join(dataset_dir, f"preprocessed/gts_{split}.json"))

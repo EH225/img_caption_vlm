@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 from torch.optim import AdamW
 from typing import Tuple, List, Dict
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import plot_and_save_loss, denormalize_imagenet
+from utils import plot_and_save_loss, denormalize_imagenet, cider_clean
 import logging
 import psutil
 import pandas as pd
@@ -32,13 +32,6 @@ class TqdmLoggingHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         tqdm.write(msg)
-
-
-def tokenize(s: str) -> List[str]:
-    """
-    Tokenizes an input string by removing periods and commands and splits the string on white space gaps.
-    """
-    return s.lower().replace('.', '').replace(',', '').split()
 
 
 class TrainerMAE:
@@ -349,10 +342,10 @@ class TrainerMAE:
 
 class TrainerCaptioning:
     def __init__(self, vlm: VisionLanguageModel, dataloader_train: DataLoader,
-                 dataloader_val: DataLoader, gts_val: Dict, lr_start: float = 1e-4, lr_end: float = 1e-6,
-                 wd_encoder: float = 0.05, wd_decoder: float = 0.01, train_num_steps: int = 30000,
-                 warm_up_pct: float = 0.10, frozen_enc_pct: float = 0.30,
-                 adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
+                 dataloader_val: DataLoader, gts_train: Dict = None, gts_val: Dict = None,
+                 lr_start: float = 1e-4, lr_end: float = 1e-6, wd_encoder: float = 0.05,
+                 wd_decoder: float = 0.01, train_num_steps: int = 30000, warm_up_pct: float = 0.10,
+                 frozen_enc_pct: float = 0.30, adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
                  sample_every: int = 500, save_every: int = 5000, eval_every: int = 1000,
                  results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: int = 1,
                  *args, **kwargs):
@@ -364,6 +357,8 @@ class TrainerCaptioning:
         :param vlm: A vision-language model for captioning implemented in pytorch.
         :param dataloader_train: A data loader object that will yield the required training batches.
         :param dataloader_val: A data loader object that will yield the required validation batches.
+        :param gts_train: A dictionary of train set ground-truth captions organized in a dictionary with
+            image_id as the key (as an int) and lists of strings (i.e. GT captions) as the values.
         :param gts_val: A dictionary of validation set ground-truth captions organized in a dictionary with
             image_id as the key (as an int) and lists of strings (i.e. GT captions) as the values.
         :param lr_start: The initial learning rate.
@@ -429,7 +424,8 @@ class TrainerCaptioning:
         self.save_every = save_every  # The frequency of saving model weights
         self.sample_every = sample_every  # How often to generate samples
         self.eval_every = eval_every  # How often to run the evaluation metrics on the validation set
-        self.train_num_steps = train_num_steps  # The total number of training steps
+        self.train_num_steps = train_num_steps  # The total number of training steps to run
+        self.offset = 0 # If we load a milestone, offset the new milestone values by that amount
         self.warm_up_pct = warm_up_pct  # The percentage of training steps to run as LR warm-up
         self.frozen_enc_pct = frozen_enc_pct  # The number of steps for which the encoder will be frozen
         self.freeze_steps = int(train_num_steps * frozen_enc_pct)  # Freeze the encoder at first
@@ -438,8 +434,9 @@ class TrainerCaptioning:
         # Save a pointer to the train and validation dataloaders
         self.dataloader_train = dataloader_train
         self.dataloader_val = dataloader_val
-        # A dictionary of image captions for periodic eval vs the validation set
-        self.gts_val = {int(k): v for k, v in gts_val.items()}
+        # A dictionary of image captions for periodic eval vs the validation set or training
+        self.gts_train = {int(k): v for k, v in gts_train.items()} if gts_train else None
+        self.gts_val = {int(k): v for k, v in gts_val.items()} if gts_val else None
         self.cider_scorer = Cider()  # Used for computing CIDEr scores
 
         # 4). Configure the optimizer for training - segment the encoder training parameters from the decoder
@@ -465,7 +462,7 @@ class TrainerCaptioning:
         self.scheduler = SequentialLR(self.opt, schedulers=[warmup, decay], milestones=[warmup_steps])
 
         # 6). Keep track of the training step and losses along the way
-        self.step = 0  # Training step counter
+        self.step = 0  # Training step counter for the current training run
         self.all_losses = []  # Aggregate loss values during training
 
         # 7). Load in the latest checkpoint weights to continue from where the models were last saved
@@ -474,8 +471,8 @@ class TrainerCaptioning:
             if len(checkpoints) > 0:  # If there is a milestone saved, load in the weights
                 last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
                 # Load in the most recent milestone to continue training
-                load_opt_and_scheduler = (use_latest_checkpoint == 1) # Load all if set to 1
-                self.load(last_checkpoint, load_opt_and_scheduler)
+                weights_only = (use_latest_checkpoint == 2) # Load in only the weights if set to 2
+                self.load(last_checkpoint, weights_only)
             else:  # Otherwise, check if there are any pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
                 pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
@@ -505,13 +502,12 @@ class TrainerCaptioning:
         # Save down all the loss values produced by model training since the last caching
         pd.Series(self.all_losses).to_csv(os.path.join(self.losses_folder, f"losses-{milestone}.csv"))
 
-    def load(self, milestone: int, load_opt_and_scheduler: bool = True) -> None:
+    def load(self, milestone: int, weights_only: bool = False) -> None:
         """
         Loads in the cached weights from disk for a particular milestone.
 
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
-        :param load_opt_and_scheduler: If True, then the optimizer and scheduler are also loaded from disk
-            along with the model weights.
+        :param weights_only: If True, then only the model weights are loaded from disk.
         :returns: None. Weights and other trainer state parameter values are loaded into memory.
         """
         checkpoint_path = os.path.join(self.checkpoints_folder, f"model-{milestone}.pt")
@@ -520,13 +516,14 @@ class TrainerCaptioning:
 
         # Re-instate the training step counter, model weights, and optimizer state from the checkpoint data
         # read in from disk
-        self.step = checkpoint_data["step"]
         self.vlm.load_state_dict(checkpoint_data["model"])
-        if load_opt_and_scheduler: # Only load if instructed
+        if not weights_only: # Load in more than just the weights
+            self.step = checkpoint_data["step"]
             self.opt.load_state_dict(checkpoint_data["opt"])
             self.scheduler.load_state_dict(checkpoint_data["scheduler"])
         else:
             self.logger.info("Optimizer and scheduler not loaded")
+            self.offset = milestone # Record and offset for future saving
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
@@ -576,9 +573,9 @@ class TrainerCaptioning:
                 # Record the average per token negative log likelihood and how many obs are in this batch
                 losses.append((loss.item(), images.shape[0]))
 
-                pred_captions = self.vlm.sample(images, max_len, return_strings=True)
+                pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
                 for pred_caption, image_name in zip(pred_captions, batch["image_names"]):
-                    res[int(image_name)] = [" ".join(tokenize(pred_caption))]
+                    res[int(image_name)] = [cider_clean(pred_caption)]
             batch_count += 1
             if batch_count >= max_batches:
                 break
@@ -598,6 +595,15 @@ class TrainerCaptioning:
         self.vlm.train()  # Set back to train mode to re-enable dropout etc.
         return val_loss, val_ppl, val_cider
 
+    def report_lr_wd(self):
+        """
+        Reports the learning rates and weight decay parameter values of the vlm model.
+        """
+        labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
+        for i, group in enumerate(self.opt.param_groups): # Report all learning rates
+            self.logger.info((f"{labels[i].ljust(16)}: lr = {group['lr']:.2e}, wd = "
+                              f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
+
     def train(self, eps: float = 0.1, max_len: int = 50) -> None:
         """
         Runs the training of the model until completion for self.train_num_steps total training iterations.
@@ -611,13 +617,11 @@ class TrainerCaptioning:
         if self.step < self.freeze_steps:  # Freeze the encoder params for the first initial training steps
             for p in self.encoder_params:
                 p.requires_grad = False
-            self.logger.info(f"Image encoder parameters are frozen at step={self.step}")
+            self.logger.info(f"Image encoder parameters are frozen at step={self.step + self.offset}")
         assert all(p.requires_grad for p in self.decoder_params)  # Should be always trainable
 
         self.logger.info(f"Starting Captions Training, device={self.device}, amp_dtype={self.amp_dtype}")
-        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and weight decay
-            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
-            break  # Show for only the first parameter group, assume all are the same
+        self.report_lr_wd()
 
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
@@ -633,7 +637,7 @@ class TrainerCaptioning:
             else:
                 scaler = torch.amp.GradScaler('cuda')
 
-        with tqdm(initial=self.step, total=self.train_num_steps) as pbar:
+        with tqdm(initial=self.step + self.offset, total=self.train_num_steps + self.offset) as pbar:
 
             while self.step < self.train_num_steps:  # Run until all training iterations are complete
                 # Get the next training batch and move it to the same device as the model
@@ -677,7 +681,7 @@ class TrainerCaptioning:
 
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
-                    self.save(self.step)
+                    self.save(self.step + self.offset)
                     plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
@@ -694,19 +698,20 @@ class TrainerCaptioning:
                     # Periodically log the loss and other training metrics
                     self.logger.info((f"loss={loss.item():.4f}, ppl={np.exp(loss.item()):.2f}, "
                                       f"grad={grad_norm:.3f}, logit_std={outputs.std(dim=-1).mean():.3f}"))
+                    self.report_lr_wd()
                     gpu_mem_used = torch.cuda.memory_allocated() / 1e9
                     cpu_mem_used = psutil.virtual_memory().used / 1e9
                     msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
                     self.logger.info(msg)
 
                     self.logger.info("\n")
-                    self.logger.info(f"Generating samples at step={self.step}")
+                    self.logger.info(f"Generating samples at step={self.step + self.offset}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
                     indices = torch.randperm(batch["images"].size(0))[:self.num_sample]
                     images = batch["images"][indices].to(self.device)
                     captions = batch["captions"][indices].to(self.device)
                     image_names = [batch["image_names"][int(idx)] for idx in indices]
-                    pred_captions = self.vlm.sample(images, max_len, True)  # (N, T)
+                    pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
                     actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
                     # Print some side-by-side comparisons of the predicted vs actual captions
                     for yhat, y, img_name in zip(pred_captions, actual_captions, image_names):
@@ -720,7 +725,7 @@ class TrainerCaptioning:
                 if self.step == self.freeze_steps:  # Unfreeze the parameters of the image encoder
                     for p in self.encoder_params:
                         p.requires_grad = True
-                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
+                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
                 del outputs, loss, images, captions
 
                 pbar.update(1)
@@ -741,13 +746,11 @@ class TrainerCaptioning:
         if self.step < self.freeze_steps:  # Freeze the encoder params for the first initial training steps
             for p in self.encoder_params:
                 p.requires_grad = False
-            self.logger.info(f"Image encoder parameters are frozen at step={self.step}")
+            self.logger.info(f"Image encoder parameters are frozen at step={self.step + self.offset}")
         assert all(p.requires_grad for p in self.decoder_params)  # Should be always trainable
 
         self.logger.info(f"Starting SCST Training, device={self.device}, amp_dtype={self.amp_dtype}")
-        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and weight decay
-            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
-            break  # Show for only the first parameter group, assume all are the same
+        self.report_lr_wd()
 
         self.vlm.to(self.device)  # Move the model to the correct device
         self.vlm.train()  # Make sure to set the model to train mode for training
@@ -768,9 +771,8 @@ class TrainerCaptioning:
             while self.step < self.train_num_steps:  # Run until all training iterations are complete
                 # Get the next training batch and move it to the same device as the model
                 batch = next(inf_dataloader_train)
+                captions_gt = {img_id: self.gts_train[img_id] for img_id in batch["image_names"]}
                 images = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
-                captions_gt = {int(img_id): decode_caption(c, self.vlm.sp_model)
-                               for img_id, c in zip(batch["image_names"], batch["captions"])}
                 captions = batch["captions"].to(self.device, non_blocking=True)  # (N, tgt_max_len)
 
                 self.opt.zero_grad(set_to_none=True)  # Zero the grads of the opt before computing the loss
@@ -787,8 +789,8 @@ class TrainerCaptioning:
                         greedy_captions, _ = self.vlm.sample(images, max_len=50, return_strings=True,
                                                              track_gradients=False, temp=0.0)
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
-                greedy_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
-                                                                         greedy_captions)}
+                greedy_captions = {int(img_id): [cider_clean(c)] for img_id, c in zip(batch["image_names"],
+                                                                                   greedy_captions)}
 
                 # 2). Sample exploratory captions i.e. the policy rollout - track gradients here, gives us
                 # sequences sampled from the distribution of next predicted words, not just the greedy
@@ -803,13 +805,32 @@ class TrainerCaptioning:
                                                                      track_gradients=True, temp=0.0)
                 # sampled_seqs is a list of strings of length N and sampled_logprobs is a torch.Tensor of
                 # float values of length N which has gradient tracking for computing the loss below
+                # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
+                sampled_captions = {int(img_id): [cider_clean(c)] for img_id, c in zip(batch["image_names"],
+                                                                                    sampled_captions)}
 
                 # 3). Compute rewards, the CIDEr difference between the greedy and exploratory captions
                 # The CIDEr scorer expects a dictionary of format {image_id: [string1, string2 ...], ...}
-                greedy_rewards = self.cider_scorer.compute_score(refs=captions_gt, hyps=greedy_captions)[1]
-                sampled_rewards = self.cider_scorer.compute_score(refs=captions_gt, hyps=sampled_captions)[1]
+
+                print("greedy_captions")
+                print(greedy_captions)
+
+                print("sampled_captions")
+                print(sampled_captions)
+
+                print("captions_gt")
+                print(captions_gt)
+
+
+                greedy_rewards = self.cider_scorer.compute_score(captions_gt, greedy_captions)[1]
+                sampled_rewards = self.cider_scorer.compute_score(captions_gt, sampled_captions)[1]
+
+                print("greedy_reward avg", greedy_rewards.mean())
+                print("sampled_rewards avg", sampled_rewards.mean())
 
                 # Advantage = sampled - baseline (hence self-critical)
+                print("type(sampled_rewards)", type(sampled_rewards))
+                print("type(greedy_rewards)", type(greedy_rewards))
                 advantages = sampled_rewards - greedy_rewards  # Size N = batch_size
                 # Normalize the advantages to reduce variance
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -852,7 +873,7 @@ class TrainerCaptioning:
 
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
-                    self.save(self.step)
+                    self.save(self.step + self.offset)
                     plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
@@ -869,19 +890,20 @@ class TrainerCaptioning:
                     # Periodically log the loss and other training metrics
                     self.logger.info((f"loss={loss.item():.4f}, grad={grad_norm:.3f}, "
                                       f"mean_greedy_cider={greedy_rewards.mean():.3f}"))
+                    self.report_lr_wd()
                     gpu_mem_used = torch.cuda.memory_allocated() / 1e9
                     cpu_mem_used = psutil.virtual_memory().used / 1e9
                     msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
                     self.logger.info(msg)
 
                     self.logger.info("\n")
-                    self.logger.info(f"Generating samples at step={self.step}")
+                    self.logger.info(f"Generating samples at step={self.step + self.offset}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
                     indices = torch.randperm(batch["images"].size(0))[:self.num_sample]
                     images = batch["images"][indices].to(self.device)
                     captions = batch["captions"][indices].to(self.device)
                     image_names = [batch["image_names"][int(idx)] for idx in indices]
-                    pred_captions = self.vlm.sample(images, max_len, True)  # (N, T)
+                    pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
                     actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
                     # Print some side-by-side comparisons of the predicted vs actual captions
                     for yhat, y, img_name in zip(pred_captions, actual_captions, image_names):
@@ -895,7 +917,7 @@ class TrainerCaptioning:
                 if self.step == self.freeze_steps:  # Unfreeze the parameters of the image encoder
                     for p in self.encoder_params:
                         p.requires_grad = True
-                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
+                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
                 del outputs, loss, images, captions
 
                 pbar.update(1)

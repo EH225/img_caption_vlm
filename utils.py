@@ -163,3 +163,8 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
     return cfg
 
 
+def cider_clean(s: str) -> str:
+    """
+    Cleans a caption for CIDEr evaluation by removeing periods, commas, and extra white space.
+    """
+    return " ".join(s.lower().replace('.', '').replace(',', '').split())

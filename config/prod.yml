@@ -69,3 +69,22 @@ TrainerCaptioning:
     use_latest_checkpoint: 1
     eps: 0.10
     max_len: 50
+
+TrainerSCST:
+    lr_start: 2.0e-5
+    lr_end: 1.0e-6
+    wd_encoder: 0.05
+    wd_decoder: 0.01
+    train_num_steps: 10000
+    warm_up_pct: 0.0
+    frozen_enc_pct: 0.0
+    grad_clip: 1.0
+    sample_every: 500
+    save_every: 2000
+    eval_every: 500
+    results_folder: "results/captioning"
+    use_amp: True
+    use_latest_checkpoint: 2 # Load in only the model weights
+    eps: 0.10
+    max_len: 50
+    lambda_xe: 0.1

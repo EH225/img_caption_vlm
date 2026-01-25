@@ -71,7 +71,7 @@ def train_captioning_model(config: Dict) -> None:
         gts_val = json.load(f)  # Load in the dictionary of ground-truth val set captions
 
     # 4). Configure the training pipeline with the trainer object
-    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_val,
+    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_val=gts_val,
                                 **config.get("TrainerCaptioning", {}))
 
     # 5). Train the model to completion
@@ -104,13 +104,13 @@ def train_scst(config: Dict) -> None:
         gts_val = json.load(f)  # Load in the dictionary of ground-truth val set captions
 
     # 4). Configure the training pipeline with the trainer object
-    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_val,
-                                **config.get("TrainerCaptioning", {}))
+    trainer = TrainerCaptioning(vlm, dataloader_train, dataloader_val, gts_train=gts_train, gts_val=gts_val,
+                                **config.get("TrainerSCST", {}))
 
     # 5). Train the model to completion
-    trainer.train_scst(eps=config["TrainerCaptioning"].get("eps", 0.1),
-                       max_len=config["TrainerCaptioning"].get("max_len", 50),
-                       lambda_xe=config["TrainerCaptioning"].get("lambda_xe", 0.1))
+    trainer.train_scst(eps=config["TrainerSCST"].get("eps", 0.1),
+                       max_len=config["TrainerSCST"].get("max_len", 50),
+                       lambda_xe=config["TrainerSCST"].get("lambda_xe", 0.1))
 
 
 
@@ -127,6 +127,6 @@ if __name__ == "__main__":
         if os.path.exists(debug_results_dir):  # Check if the output results directory exists
             shutil.rmtree(debug_results_dir)  # Remove entire results directory
 
-    # pre_train_mae(config)  # Run model pre-training
-    # train_captioning_model(config)  # Run model training
+    pre_train_mae(config)  # Run model pre-training
+    train_captioning_model(config)  # Run model training
     train_scst(config) # Run SCST fine-tuning on the pre-trained model

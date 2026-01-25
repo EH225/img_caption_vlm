@@ -44,10 +44,10 @@ TrainerMAE:
     lr_start: 1.0e-4
     lr_end: 1.0e-6
     weight_decay: 0.05
-    train_num_steps: 80
+    train_num_steps: 40
     grad_clip: 1.0
     sample_every: 10
-    save_every: 40
+    save_every: 10
     results_folder: "debug/pretrain"
     use_amp: True
     use_latest_checkpoint: True
@@ -67,6 +67,25 @@ TrainerCaptioning:
     eval_every: 5
     results_folder: "debug/captioning"
     use_amp: True
-    use_latest_checkpoint: 1
+    use_latest_checkpoint: 1 # Load in model weights from pre-training
     eps: 0.10
     max_len: 5
+
+TrainerSCST:
+    lr_start: 2.0e-5
+    lr_end: 1.0e-6
+    wd_encoder: 0.05
+    wd_decoder: 0.01
+    train_num_steps: 100
+    warm_up_pct: 0.0
+    frozen_enc_pct: 0.0
+    grad_clip: 1.0
+    sample_every: 25
+    save_every: 50
+    eval_every: 25
+    results_folder: "debug/captioning"
+    use_amp: True
+    use_latest_checkpoint: 2 # Load in only the model weights
+    eps: 0.10
+    max_len: 50
+    lambda_xe: 0.1
