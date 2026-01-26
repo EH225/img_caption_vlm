@@ -407,7 +407,7 @@ class TrainerCaptioning:
             os.makedirs(directory, exist_ok=True)  # Create the directory if not already there
 
         # 2). Set up logging during training
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(self.__class__.__name__ + "scst" if scst else "")
         self.logger.setLevel(logging.INFO)
 
         if not self.logger.handlers:  # Prevent duplicate handlers
@@ -427,6 +427,7 @@ class TrainerCaptioning:
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
         self.logger.propagate = False
+        self.logger.info("Logger successfully initialized")
 
         # 3). Record input parameters
         self.vlm = vlm  # The vision-language model to be trained

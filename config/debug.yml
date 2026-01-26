@@ -50,7 +50,7 @@ TrainerMAE:
     save_every: 10
     results_folder: "debug/pretrain"
     use_amp: True
-    use_latest_checkpoint: True
+    use_latest_checkpoint: 1
     mask_ratio: 0.75
 
 TrainerCaptioning:
