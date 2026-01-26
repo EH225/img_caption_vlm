@@ -192,6 +192,16 @@ class TrainerMAE:
                 if torch.is_tensor(v):
                     state[k] = v.to(self.device)
 
+    def report_lr_wd(self):
+        """
+        Reports the learning rates and weight decay parameter values of the vlm model.
+        """
+        self.logger.info(f"Reporting learning rates and weight decay at setp={self.step}")
+        labels = ["Encoder", "Decoder"]
+        for i, group in enumerate(self.opt.param_groups): # Report all learning rates
+            self.logger.info((f"{labels[i].ljust(8)}: lr = {group['lr']:.2e}, wd = "
+                              f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
+
     def train(self, mask_ratio: float = 0.75) -> None:
         """
         Runs the MAE pre-training of the VLM model until completion for self.train_num_steps total training
@@ -201,9 +211,7 @@ class TrainerMAE:
         :returns: None. Caches the results to disk.
         """
         self.logger.info(f"Starting MAE Training, device={self.device}, amp_dtype={self.amp_dtype}")
-        for i, param_group in enumerate(self.opt.param_groups):  # Report the learning rate and wt decay
-            self.logger.info(f"lr={param_group['lr']}, wd={param_group['weight_decay']}")
-            break  # Show for only the first parameter group, assume all are the same
+        self.report_lr_wd()
 
         self.encoder.to(self.device)  # Move the encoder model to the correct device
         self.encoder.train()  # Make sure to set the encoder model to train mode for training
@@ -285,6 +293,7 @@ class TrainerMAE:
                     # Periodically log the loss and other training metrics
                     self.logger.info((f"loss={loss.item():.4f}, grad_norm_vlm={grad_norm_vlm:.3f}, "
                                       f"grad_norm_decoder={grad_norm_decoder:.3f}"))
+                    self.report_lr_wd()
                     gpu_mem_used = torch.cuda.memory_allocated() / 1e9
                     cpu_mem_used = psutil.virtual_memory().used / 1e9
                     msg = f"[GPU, CPU] Memory Allocated: {gpu_mem_used:.2f}GB {cpu_mem_used:.2f}GB"
@@ -576,6 +585,7 @@ class TrainerCaptioning:
                 pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
                 for pred_caption, image_name in zip(pred_captions, batch["image_names"]):
                     res[int(image_name)] = [cider_clean(pred_caption)]
+
             batch_count += 1
             if batch_count >= max_batches:
                 break

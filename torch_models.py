@@ -175,6 +175,12 @@ class MultiHeadedAttention(nn.Module):
         # don't update the kv cache after the first iteration i.e. the image patches need only be processed 1x
         self.kv_cache = None # Cache key-value pairs to speed up auto-regressive rollouts
 
+    def clear_cache(self) -> None:
+        """
+        This method clears out the key-value cache and should be called before starting step-wise decoding.
+        """
+        self.kv_cache = None
+
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 attn_mask: torch.Tensor = None, return_attn: bool = False, step: bool = False
                 ) -> torch.Tensor:
@@ -1105,6 +1111,7 @@ class LanguageDecoder(nn.Module):
         This method clears out the key-value cache and should be called before starting step-wise decoding.
         """
         self.img_features_cache = None
+        self.decoder.clear_cache()
 
     def decode_step(self, img_features: torch.Tensor, word_idx_seq: torch.Tensor) -> torch.Tensor:
         """
@@ -1293,7 +1300,7 @@ class VisionLanguageModel(nn.Module):
 
         was_training = self.training
         self.train() if track_gradients else self.eval() # Switch to training mode if gradient tracking
-        self.decoder.clear_cache() # Clear out the KV cache values before starting this new batch
+        self.decoder.clear_cache() # Clear out the KV and image features cache before running
 
         with torch.set_grad_enabled(track_gradients):
 
@@ -1339,7 +1346,7 @@ class VisionLanguageModel(nn.Module):
                 partial_captions = torch.cat([partial_captions, word_indices], dim=1)  # (N, t) -> (N, t+1)
 
         self.train() if was_training else self.eval()
-        self.decoder.clear_cache() # Clear out the KV cache values ater running
+        self.decoder.clear_cache() # Clear out the KV and image features cache ater running
 
         if return_strings is False:  # Return as a np.ndarray
             return captions, log_probs_sum  # (N, T) = (batch_size, max_size), (N, ) float values

@@ -57,7 +57,7 @@ TrainerCaptioning:
     lr_end: 1.0e-6
     wd_encoder: 0.05
     wd_decoder: 0.01
-    train_num_steps: 25000
+    train_num_steps: 50000
     warm_up_pct: 0.1
     frozen_enc_pct: 0.3
     grad_clip: 1.0
@@ -68,7 +68,7 @@ TrainerCaptioning:
     use_amp: True
     use_latest_checkpoint: 1
     eps: 0.10
-    max_len: 50
+    max_len: 25
 
 TrainerSCST:
     lr_start: 2.0e-5
@@ -86,5 +86,5 @@ TrainerSCST:
     use_amp: True
     use_latest_checkpoint: 2 # Load in only the model weights
     eps: 0.10
-    max_len: 50
+    max_len: 25
     lambda_xe: 0.1
