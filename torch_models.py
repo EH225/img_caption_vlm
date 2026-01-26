@@ -156,9 +156,9 @@ class MultiHeadedAttention(nn.Module):
 
         # Create linear transforms from input (token embeddings + positional embeddings) to key, query, and
         # value vectors using a nn.Linear layer to perform the matrix multiplication of learned weights
-        self.key_map = nn.Linear(embed_dim, embed_dim)
-        self.query_map = nn.Linear(embed_dim, embed_dim)
-        self.value_map = nn.Linear(embed_dim, embed_dim)
+        self.key = nn.Linear(embed_dim, embed_dim)
+        self.query = nn.Linear(embed_dim, embed_dim)
+        self.value = nn.Linear(embed_dim, embed_dim)
 
         self.proj = nn.Linear(embed_dim, embed_dim)  # A final projection layer after computing attention
         self.attn_drop = nn.Dropout(dropout)
