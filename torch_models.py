@@ -214,7 +214,7 @@ class MultiHeadedAttention(nn.Module):
         # and value vectors are the image patch embeddings
 
         # Target (queries) reshape (N, T, E) -> (N, H, T, E/H), these are always computed
-        Q = self.query_map(query)  # (N, T, E) @ (E, E) = (N, T, E) convert to query vectors
+        Q = self.query(query)  # (N, T, E) @ (E, E) = (N, T, E) convert to query vectors
         Q = Q.reshape(N, T, self.num_heads, self.head_dim)  # Reshape to (N, T, H, E/H)
         Q = torch.permute(Q, (0, 2, 1, 3))  # Reshape to (N, H, T, E/H)
 
@@ -234,11 +234,11 @@ class MultiHeadedAttention(nn.Module):
             # In Self-Attention: Keys, values, and queries are all from word vectors or image patches
 
             # Source (keys and values) reshape (N, S, E) -> (N, S, E/H, H)
-            K = self.key_map(key)  # (N, S, E) @ (E, E) = (N, S, E) convert to key vectors
+            K = self.key(key)  # (N, S, E) @ (E, E) = (N, S, E) convert to key vectors
             K = K.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
             K = torch.permute(K, (0, 2, 3, 1))  # Reshape to (N, H, E/H, S)
 
-            V = self.value_map(value)  # (N, S, E) @ (E, E) = (N, S, E) convert to value vectors
+            V = self.value(value)  # (N, S, E) @ (E, E) = (N, S, E) convert to value vectors
             V = V.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
             V = torch.permute(V, (0, 2, 1, 3))  # Reshape to (N, H, S, E/H)
 
