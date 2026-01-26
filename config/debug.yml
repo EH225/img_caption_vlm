@@ -72,20 +72,21 @@ TrainerCaptioning:
     max_len: 5
 
 TrainerSCST:
+    scst: True
     lr_start: 2.0e-5
     lr_end: 1.0e-6
-    wd_encoder: 0.05
-    wd_decoder: 0.01
+    wd_encoder: 0.02
+    wd_decoder: 0.002
     train_num_steps: 25
-    warm_up_pct: 0.05
-    frozen_enc_pct: 0.0
+    warm_up_pct: 0.10
+    frozen_enc_pct: 0.20
     grad_clip: 1.0
     sample_every: 5
     save_every: 10
-    eval_every: 10
-    results_folder: "debug/captioning"
+    eval_every: 5
+    results_folder: "debug/scst"
     use_amp: True
-    use_latest_checkpoint: 2 # Load in only the model weights
-    eps: 0.10
+    use_latest_checkpoint: 1
+    eps: 0.05
     max_len: 5
     lambda_xe: 0.1
