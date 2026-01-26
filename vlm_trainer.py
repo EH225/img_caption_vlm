@@ -855,6 +855,7 @@ class TrainerCaptioning:
                 advantages = sampled_rewards - greedy_rewards  # Size N = batch_size
                 # Normalize the advantages to reduce variance
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = np.clip(advantages, -2.0, 2.0) # Add extreme value clipping
                 advantages = torch.tensor(advantages, device=logprobs_sum.device)  # Move to torch tensor
 
                 # 4). Compute the SCST loss = (-1) * mean( advantage * log_prob )
