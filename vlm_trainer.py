@@ -197,9 +197,9 @@ class TrainerMAE:
         Reports the learning rates and weight decay parameter values of the vlm model.
         """
         self.logger.info(f"Reporting learning rates and weight decay at setp={self.step}")
-        labels = ["Encoder", "Decoder"]
+        labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
         for i, group in enumerate(self.opt.param_groups): # Report all learning rates
-            self.logger.info((f"{labels[i].ljust(8)}: lr = {group['lr']:.2e}, wd = "
+            self.logger.info((f"{labels[i].ljust(16)}: lr = {group['lr']:.2e}, wd = "
                               f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
 
     def train(self, mask_ratio: float = 0.75) -> None:
