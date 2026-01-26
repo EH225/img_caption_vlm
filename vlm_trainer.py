@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 from torch.optim import AdamW
+import torch.nn as nn
 from typing import Tuple, List, Dict
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
 from utils import plot_and_save_loss, denormalize_imagenet, cider_clean
@@ -357,7 +358,7 @@ class TrainerCaptioning:
                  frozen_enc_pct: float = 0.30, adam_betas: Tuple[float] = (0.9, 0.98), grad_clip: float = 1.0,
                  sample_every: int = 500, save_every: int = 5000, eval_every: int = 1000,
                  results_folder: str = None, use_amp: bool = False, use_latest_checkpoint: int = 1,
-                 *args, **kwargs):
+                 scst: bool = False, *args, **kwargs):
         """
         A framework for training a Vision-Language Model (VLT). This class wrapper has methods for loading
         a model from a recent checkpoint, saving a model periodically during training, and running a training
@@ -392,6 +393,8 @@ class TrainerCaptioning:
             1 then the model weights, opt, and scheduler will be loaded from the checkpoint directory before
             training begins to pick up from where it was last left off. If set to 2, then only the weights
             are loaded, but not the optimizer or scheduler.
+        :param scst: A bool indicating if this is SCST fine-tuning, otherwise if False, the trainer will be
+            set up for supervised captioning training using teacher-forcing.
         """
         super().__init__()
 
@@ -408,7 +411,8 @@ class TrainerCaptioning:
         self.logger.setLevel(logging.INFO)
 
         if not self.logger.handlers:  # Prevent duplicate handlers
-            file_handler = logging.FileHandler(os.path.join(self.results_folder, "train.log"),
+            log_file = "train.log" if scst is False else "scst_train.log"
+            file_handler = logging.FileHandler(os.path.join(self.results_folder, log_file),
                                                encoding="utf-8")
             file_handler.setFormatter(
                 logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
@@ -434,11 +438,11 @@ class TrainerCaptioning:
         self.sample_every = sample_every  # How often to generate samples
         self.eval_every = eval_every  # How often to run the evaluation metrics on the validation set
         self.train_num_steps = train_num_steps  # The total number of training steps to run
-        self.offset = 0 # If we load a milestone, offset the new milestone values by that amount
         self.warm_up_pct = warm_up_pct  # The percentage of training steps to run as LR warm-up
         self.frozen_enc_pct = frozen_enc_pct  # The number of steps for which the encoder will be frozen
         self.freeze_steps = int(train_num_steps * frozen_enc_pct)  # Freeze the encoder at first
         # since it will be pre-trained on the MAE objective and should generally be in a good spot
+        self.scst = scst # Record whether this is SCST fine-tuning or not
 
         # Save a pointer to the train and validation dataloaders
         self.dataloader_train = dataloader_train
@@ -484,7 +488,10 @@ class TrainerCaptioning:
                 self.load(last_checkpoint, weights_only)
             else:  # Otherwise, check if there are any pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
-                pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
+                if scst is False: # If doing stage 2 supervised training, look to the MAE pre-training dir
+                    pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
+                else: # Otherwise if doing stage 2 SCST training, look to the captioning dir
+                    pretrained_wts_dir = os.path.join(self.results_folder, "../captioning/checkpoints")
                 if os.path.exists(pretrained_wts_dir):
                     milestones = [int(x.replace("model-", "").replace(".pt", ""))
                                   for x in os.listdir(pretrained_wts_dir)]
@@ -532,7 +539,6 @@ class TrainerCaptioning:
             self.scheduler.load_state_dict(checkpoint_data["scheduler"])
         else:
             self.logger.info("Optimizer and scheduler not loaded")
-            self.offset = milestone # Record and offset for future saving
         # Losses are not loaded in, they are saved to disk periodically with the model weights and are not
         # needed to continue training. The losses obtained by training will be cached again at the next save
 
@@ -544,16 +550,29 @@ class TrainerCaptioning:
 
     def load_pretrained(self, milestone: int) -> None:
         """
-        Loads in the cached encoder weights from disk for a particular milestone from the pretrain directory.
+        Loads in pre-trained model weights form disk for a particular milestone. If self.scst is False, then
+        the trainer is configured for supervised training so pre-trained weights will be located in the
+        pretrain directory corresponding to the MAE encoder pre-training. If self.scst is True, then the
+        trainer is configured for SCST fine-tuning so the pre-trained model weights will be located in the
+        captioning directory corresponding to the VLM model.
 
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
-        :returns: None. Weights are loaded into the encoder portion of the VLM model.
+        :returns: None. Weights are loaded into the model from disk.
         """
-        checkpoint_path = os.path.join(self.results_folder, f"../pretrain/checkpoints/model-{milestone}.pt")
-        self.logger.info(f"Loading pretrained encoder model weights from {checkpoint_path}.")
-        checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
-        # Re-instate the model weights from the checkpoint data read in from disk
-        self.vlm.encoder.load_state_dict(checkpoint_data["model_encoder"])
+        if self.scst is False: # Stage 2 supervised training with a cross-entropy loss
+            file_path = f"../pretrain/checkpoints/model-{milestone}.pt"
+            checkpoint_path = os.path.join(self.results_folder, file_path)
+            self.logger.info(f"Loading pretrained encoder model weights from {checkpoint_path}.")
+            checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
+            # Re-instate the model weights from the checkpoint data read in from disk
+            self.vlm.encoder.load_state_dict(checkpoint_data["model_encoder"])
+        else: # Stage 3 SCST fine-tuning, load the pre-trained model from the captioning folder
+            file_path = f"../captioning/checkpoints/model-{milestone}.pt"
+            checkpoint_path = os.path.join(self.results_folder, file_path)
+            self.logger.info(f"Loading pretrained VLM model weights from {checkpoint_path}.")
+            checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
+            # Re-instate the model weights from the checkpoint data read in from disk
+            self.vlm.load_state_dict(checkpoint_data["model"])
 
     def compute_eval_scores(self, max_len: int = 50, max_batches: int = 10) -> Tuple[float]:
         """
@@ -628,7 +647,7 @@ class TrainerCaptioning:
         if self.step < self.freeze_steps:  # Freeze the encoder params for the first initial training steps
             for p in self.encoder_params:
                 p.requires_grad = False
-            self.logger.info(f"Image encoder parameters are frozen at step={self.step + self.offset}")
+            self.logger.info(f"Image encoder parameters are frozen at step={self.step}")
         assert all(p.requires_grad for p in self.decoder_params)  # Should be always trainable
 
         self.logger.info(f"Starting Captions Training, device={self.device}, amp_dtype={self.amp_dtype}")
@@ -648,7 +667,7 @@ class TrainerCaptioning:
             else:
                 scaler = torch.amp.GradScaler('cuda')
 
-        with tqdm(initial=self.step + self.offset, total=self.train_num_steps + self.offset) as pbar:
+        with tqdm(initial=self.step, total=self.train_num_steps) as pbar:
 
             while self.step < self.train_num_steps:  # Run until all training iterations are complete
                 # Get the next training batch and move it to the same device as the model
@@ -692,7 +711,7 @@ class TrainerCaptioning:
 
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
-                    self.save(self.step + self.offset)
+                    self.save(self.step)
                     plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
@@ -716,7 +735,7 @@ class TrainerCaptioning:
                     self.logger.info(msg)
 
                     self.logger.info("\n")
-                    self.logger.info(f"Generating samples at step={self.step + self.offset}")
+                    self.logger.info(f"Generating samples at step={self.step}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
                     indices = torch.randperm(batch["images"].size(0))[:self.num_sample]
                     images = batch["images"][indices].to(self.device)
@@ -736,7 +755,7 @@ class TrainerCaptioning:
                 if self.step == self.freeze_steps:  # Unfreeze the parameters of the image encoder
                     for p in self.encoder_params:
                         p.requires_grad = True
-                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
+                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
                 del outputs, loss, images, captions
 
                 pbar.update(1)
@@ -751,14 +770,19 @@ class TrainerCaptioning:
         :param max_len: Sets the max length of the sampled captions during training which are periodically
             printed to show the model's progress and also for the periodic eval runs on the validation set.
         :param lambda_xe: Allows the SCST loss to be augmented with lambda_xe * xe_loss for stability. Set to
-            0.0 to skip entirely.
+            0.0 to skip entirely. This parameter sets the max value which is annealed to zero during training.
         :returns: None. Caches the results to disk.
         """
         if self.step < self.freeze_steps:  # Freeze the encoder params for the first initial training steps
             for p in self.encoder_params:
                 p.requires_grad = False
-            self.logger.info(f"Image encoder parameters are frozen at step={self.step + self.offset}")
+            self.logger.info(f"Image encoder parameters are frozen at step={self.step}")
         assert all(p.requires_grad for p in self.decoder_params)  # Should be always trainable
+
+        # Turn off dropout during SCST training in both the encoder and decoder networks
+        for module in self.vlm.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = 0.0
 
         self.logger.info(f"Starting SCST Training, device={self.device}, amp_dtype={self.amp_dtype}")
         self.report_lr_wd()
@@ -845,8 +869,9 @@ class TrainerCaptioning:
                         outputs = self.vlm(images, captions)  # (N, T, V)
                         xe_loss = self.vlm.compute_loss(outputs, captions, eps)
 
-                    loss = loss + lambda_xe * xe_loss
-                    del outputs, xe_loss
+                    # Combine the SCST loss with the cross-entropy loss, anneal towards 0 during training
+                    loss = loss + (lambda_xe * 1 - (self.step + 1) / self.train_num_steps) * xe_loss
+                    del outputs, xe_loss # Free up memory when finished
 
                 if self.amp_dtype == torch.float16:
                     scaler.scale(loss).backward()
@@ -872,7 +897,7 @@ class TrainerCaptioning:
 
                 # Periodically save the model weights to disk
                 if self.step % self.save_every == 0 or self.step == self.train_num_steps:
-                    self.save(self.step + self.offset)
+                    self.save(self.step)
                     plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
                     # from the last save to the next save
@@ -896,7 +921,7 @@ class TrainerCaptioning:
                     self.logger.info(msg)
 
                     self.logger.info("\n")
-                    self.logger.info(f"Generating samples at step={self.step + self.offset}")
+                    self.logger.info(f"Generating samples at step={self.step}")
                     batch = next(inf_dataloader_val)  # Get the next batch of data from the validation set
                     indices = torch.randperm(batch["images"].size(0))[:self.num_sample]
                     images = batch["images"][indices].to(self.device)
@@ -916,7 +941,7 @@ class TrainerCaptioning:
                 if self.step == self.freeze_steps:  # Unfreeze the parameters of the image encoder
                     for p in self.encoder_params:
                         p.requires_grad = True
-                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step + self.offset}")
+                    self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
 
                 del batch, captions_gt, images, captions, greedy_captions, logprobs_g, sampled_captions
                 del logprobs_sum, greedy_rewards, sampled_rewards, advantages, loss

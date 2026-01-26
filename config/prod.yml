@@ -9,7 +9,7 @@ ImageEncoder:
     num_heads: 12
     ffn_dim: 3072
     dropout: 0.1
-    ffn_dropout: 0.2
+    ffn_dropout: 0.1
 
 MAEdecoder:
     img_size: 224
@@ -22,14 +22,14 @@ MAEdecoder:
     dropout: 0.1
     ffn_dropout: 0.2
 
-LanguageDecoder: 
+LanguageDecoder:
     img_feature_shape: [196, 768]
     embed_dim: 512
-    num_layers: 4
+    num_layers: 8
     num_heads: 8
     ffn_dim: 2048
-    dropout: 0.1
-    ffn_dropout: 0.2
+    dropout: 0.05
+    ffn_dropout: 0.1
 
 DataLoaderTrain: 
     batch_size: 256
@@ -53,13 +53,13 @@ TrainerMAE:
     mask_ratio: 0.75
 
 TrainerCaptioning:
-    lr_start: 1.5e-4
+    lr_start: 2.0e-4
     lr_end: 1.0e-6
-    wd_encoder: 0.05
-    wd_decoder: 0.01
+    wd_encoder: 0.03
+    wd_decoder: 0.005
     train_num_steps: 50000
     warm_up_pct: 0.1
-    frozen_enc_pct: 0.3
+    frozen_enc_pct: 0.35
     grad_clip: 1.0
     sample_every: 500
     save_every: 1000
@@ -67,14 +67,15 @@ TrainerCaptioning:
     results_folder: "results/captioning"
     use_amp: True
     use_latest_checkpoint: 1
-    eps: 0.10
+    eps: 0.05
     max_len: 25
 
 TrainerSCST:
+    scst: True
     lr_start: 2.0e-5
     lr_end: 1.0e-6
-    wd_encoder: 0.05
-    wd_decoder: 0.01
+    wd_encoder: 0.02
+    wd_decoder: 0.002
     train_num_steps: 20000
     warm_up_pct: 0.10
     frozen_enc_pct: 0.20
@@ -82,9 +83,9 @@ TrainerSCST:
     sample_every: 500
     save_every: 2000
     eval_every: 500
-    results_folder: "results/captioning"
+    results_folder: "results/scst"
     use_amp: True
-    use_latest_checkpoint: 2 # Load in only the model weights
-    eps: 0.10
+    use_latest_checkpoint: 1
+    eps: 0.05
     max_len: 25
     lambda_xe: 0.1
