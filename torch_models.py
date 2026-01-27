@@ -66,6 +66,25 @@ def random_masking(x: torch.Tensor, mask_ratio: float = 0.75) -> Tuple[torch.Ten
     return x_visible, mask, ids_restore
 
 
+def word_dropout(word_idx_seq: torch.Tensor, dropout: float = 0.1, pad_idx: int = 0):
+    """
+    Applies word token dropout by randomly masking some of the work token indices in word_idx_seq by replacing
+    them with the padding token index value (usually 0). This encourages the decoder to use the visual
+    features instead of memorizing word sequences during training.
+
+    :param word_idx_seq: A tensor containing a batch of word index sequences i.e. integers of size
+        (N, T) where T is the max length among the sequences.
+    :param dropout: The probability of randomly replacing any given word index with the padding token index.
+    :param pad_idx: The index value associated with the padding token, usually 0.
+    :returns A tensor of the same shape (N, T) as the input word_idx_seq with some tokens ids randomly
+        replaced with the padding token ID.
+    """
+    mask = (torch.rand_like(word_idx_seq.float()) < dropout) & (word_idx_seq != pad_idx) # (N, T)
+    mask[0, :] = False # Never mask the first BOS <s> special token that begins the sentence
+    word_idx_seq = word_idx_seq.clone()
+    word_idx_seq[mask] = pad_idx
+    return word_idx_seq # (N, T)
+
 NO_DECAY_LAYERS = (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.GroupNorm, nn.Embedding)
 
 
@@ -84,6 +103,7 @@ def get_param_groups(model, weight_decay: float, lr: float, verbose: bool = Fals
     """
     decay = []
     no_decay = []
+    seen_params = set()
 
     if hasattr(model, "num_patches") and hasattr(model, "embed_dim"):
         img_patch_embed_shape = (1, model.num_patches + 1, model.embed_dim)
@@ -96,6 +116,9 @@ def get_param_groups(model, weight_decay: float, lr: float, verbose: bool = Fals
             if not param.requires_grad:
                 continue
 
+            if id(param) in seen_params:
+                continue  # skip duplicate references, handles the case of tied parameters
+
             if param.ndim == 1 or isinstance(module, NO_DECAY_LAYERS):
                 no_decay.append(param)
             elif cls_token_shape is not None and param.shape in [img_patch_embed_shape, cls_token_shape]:
@@ -103,6 +126,8 @@ def get_param_groups(model, weight_decay: float, lr: float, verbose: bool = Fals
 
             else:
                 decay.append(param)
+
+            seen_params.add(id(param))
 
     # Check that all parameters have been accounted for i.e. either in the decay or no decay category
     total_params = sum(p.numel() for p in model.parameters())
@@ -182,8 +207,8 @@ class MultiHeadedAttention(nn.Module):
         self.kv_cache = None
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
-                attn_mask: torch.Tensor = None, return_attn: bool = False, step: bool = False
-                ) -> torch.Tensor:
+                attn_mask: torch.Tensor = None, pad_mask: torch.Tensor = None,
+                return_attn: bool = False, step: bool = False) -> torch.Tensor:
         """
         Calculates the masked attention output for the provided input data, computes all attention heads in
         parallel for computational efficiency.
@@ -198,6 +223,8 @@ class MultiHeadedAttention(nn.Module):
         :param value: Input data to be used to create the value vectors, of shape (N, S, E).
         :param attn_mask: A tensor of shape (T, S) where mask[i, j] == 0 indicates that token i in the target
             should not be influenced by token j in the source.
+        :param pad_mask: A tensor of shape (N, S) denoting the location of padding tokens so that they are
+            not attended to during evaluation by any of the query tokens.
         :param return_attn: If True, then the attention scores are output in addition to the tokens.
         :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A tensor of shape (N, T, E) giving the weighted combination of the value vectors according
@@ -256,6 +283,11 @@ class MultiHeadedAttention(nn.Module):
         # Apply batch multiplication along the last 2 dimensions of these input tensors
         # (N, H, [T, E/H]) @ (N, H, [E/H, S]) = (N, H, T, S)
         att_scores = torch.matmul(Q, K) / math.sqrt(self.head_dim)  # (N, H, T, S)
+
+        if pad_mask is not None:
+            # att_scores is (N, H, T, S), fill it with -inf wherever there are padding tokens in the source
+            # tokens i.e. along the last dimension, so that they are not attended to by any of the query items
+            att_scores.masked_fill_(pad_mask[:, None, None, :], -1e9)
 
         if attn_mask is not None:
             # attn_mask is (T, S), unsqueeze to create (1, 1, T, S) for broadcasting, then wherever there is a
@@ -531,7 +563,7 @@ class TransformerEncoderLayer(nn.Module):
         # Self-attention sub-block
         residual = x  # Record for the residual connection below
         x = self.norm_self_attn(x)  # Use layer norm pre-processing
-        x = self.self_attn(query=x, key=x, value=x, attn_mask=None)
+        x = self.self_attn(query=x, key=x, value=x, attn_mask=None, pad_mask=None)
         x = self.dropout_self_attn(x)
         x = x + residual  # Residual connection
 
@@ -607,14 +639,16 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout_ffn = nn.Dropout(ffn_dropout)
 
     def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None,
-                step: bool = False) -> torch.Tensor:
+                pad_mask: torch.Tensor = None, step: bool = False) -> torch.Tensor:
         """
         Computes a forward pass through the decoder layer of the tgt input and tgt_mask.
 
         :param tgt: The sequence input to the decoder layer of shape (N, T, E).
         :param memory: The sequence input from the last layer of the encoder of shape (N, S, E).
         :param tgt_mask: Masks out parts of the target sequence which should not be attended to by earlier
-            token embeddings within the target sequence.
+            token embeddings within the target sequence, is size (T, T).
+        :param pad_mask: Denotes which word tokens are padding tokens so that they are masked as well and
+            not attended to, this is used by word dropout.
         :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A sequence of transformed features of shape (N, T, E).
         """
@@ -623,7 +657,7 @@ class TransformerDecoderLayer(nn.Module):
         # Self-attention sub-block
         residual = x  # Record for the residual connection below
         x = self.norm_self_attn(x)
-        x = self.self_attn(query=x, key=x, value=x, attn_mask=tgt_mask, step=step)
+        x = self.self_attn(query=x, key=x, value=x, attn_mask=tgt_mask, pad_mask=pad_mask, step=step)
         x = self.dropout_self_attn(x)
         x = x + residual  # Residual connection
 
@@ -631,7 +665,7 @@ class TransformerDecoderLayer(nn.Module):
         # there is no attention mask here since all input encoder values are visible to all decoder timesteps
         residual = x  # Record for the residual connection below
         x = self.norm_cross_attn(x)
-        x = self.cross_attn(query=x, key=memory, value=memory, attn_mask=None, step=step)
+        x = self.cross_attn(query=x, key=memory, value=memory, attn_mask=None, pad_mask=None, step=step)
         x = self.dropout_cross_attn(x)
         x = x + residual  # Residual connection
 
@@ -670,7 +704,7 @@ class TransformerDecoder(nn.Module):
         self.num_layers = num_layers
 
     def forward(self, tgt: torch.Tensor, memory: torch.Tensor, tgt_mask: torch.Tensor = None,
-                step: bool = False) -> torch.Tensor:
+                pad_mask: torch.Tensor = None, step: bool = False) -> torch.Tensor:
         """
         Computes a forward pass through all layers of the decoder transformer, which attends the input tgt
         tokens to themselves (subject to tgt_mask) and also the memory tokens from the source sequence.
@@ -679,12 +713,14 @@ class TransformerDecoder(nn.Module):
         :param memory: The sequence input from the last layer of the encoder of shape (N, S, E).
         :param tgt_mask: Masks out parts of the target sequence which should not be attended to by earlier
             token embeddings within the target sequence.
+        :param pad_mask: Denotes which word tokens are padding tokens so that they are masked as well and
+            not attended to, this is used by word dropout.
         :param step: Indicates step-wise auto-regressive decoding is being performed, KV caching is utilized.
         :returns: A sequence of transformed features of shape (N, T, E).
         """
         x = tgt
         for layer in self.layers:
-            x = layer(x, memory, tgt_mask=tgt_mask, step=step)
+            x = layer(x, memory, tgt_mask=tgt_mask, step=step, pad_mask=pad_mask)
         return x
 
     def clear_cache(self) -> None:
@@ -1034,6 +1070,9 @@ class LanguageDecoder(nn.Module):
         self.decoder = TransformerDecoder(decoder_layer, num_layers)
         # A final projection layer from the outputs of the decoder to the vocab space
         self.vocab_proj = nn.Linear(embed_dim, self.vocab_size)
+        # Tie together the weights of the vocab projection layer with the workd token embedding layer to
+        # reduce the overall parameter count and mitigate potential overfitting in the language decoder
+        self.vocab_proj.weight = self.word_idx_embed.weight
 
         # A dummy param to tracking the device of this model during later calls
         self.register_buffer('device_param', torch.empty(0))
@@ -1078,29 +1117,36 @@ class LanguageDecoder(nn.Module):
         """
         N, T = word_idx_seq.shape  # N examples (batch size), each of at most length T
 
-        # 1). Convert the captions (encoded as integers) into word embeddings using the embedding layer
+        # 1). During training, apply word dropout to mitigate memorization of word phrases and encourage the
+        # mode to attend to the image features from the vision encoder instead
+        if self.training: # Check if the model is in training mode, if so then apply the word dropout
+            word_idx_seq = word_dropout(word_idx_seq, 0.0, self._pad)
+
+        # 2). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
+        # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
+        # Lower right triangular matrix of 1s to prevent lookahead
+        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device) # (T, T) for causal masking
+        pad_mask = (word_idx_seq == self._pad)  # Where True, we have padding (N, T), with word dropout we
+        # don't want to attend to padding tokens in the middle of the sequence
+
+        # 3). Convert the captions (encoded as integers) into word embeddings using the embedding layer
         captions_emb = self.word_idx_embed(word_idx_seq)  # (batch_size, max_len, embed_dim) = (N, T, E)
 
-        # 2). Add positional encodings to the captions embeddings
+        # 4). Add positional encodings to the captions embeddings
         captions_emb = self.word_pos_embed(captions_emb)  # (batch_size, max_len, embed_dim) = (N, T, E)
 
-        # 3). Apply a projection to the img_features before feeding them into the cross-attention mechanism
+        # 5). Apply a projection to the img_features before feeding them into the cross-attention mechanism
         # nn.Linear(patch_embed_dim, embed_dim): (batch_size, img_feat_dim) -> (batch_size, wordvec_dim)
         # then also apply layer norm before cross-attention
         img_features = self.visual_projection(img_features)  # (batch_size, num_patches, embed_dim)
         # Also add in the positional encodings again so that the decoder has the spatial info of the patches
         img_features += self.img_pos_embed_decoder  # (N, num_patches + 1, embed_dim), broadcasts along dim=0
 
-        # 4). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
-        # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
-        # Lower right triangular matrix of 1s to prevent lookahead
-        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device)
-
-        # 5). Pass the captions embeddings through a transformer block so that each word can attend to the
+        # 6). Pass the captions embeddings through a transformer block so that each word can attend to the
         # prior caption words (causal self-attention) and also to all the image features (cross-attention)
-        x = self.decoder(captions_emb, img_features, tgt_mask)  # (batch_size, T, embed_dim)
+        x = self.decoder(captions_emb, img_features, tgt_mask=tgt_mask, pad_mask=pad_mask)  # (N, T, E)
 
-        # 6). Map the transformer outputs to the vocab dim for a final word prediction at each time step
+        # 7). Map the transformer outputs to the vocab dim for a final word prediction at each time step
         # (batch_size, T, embed_dim) @ (embed_dim, vocab_size) = (batch_size, T, vocab_size)
         logit_scores = self.vocab_proj(x)
 
@@ -1249,13 +1295,12 @@ class VisionLanguageModel(nn.Module):
         targets_flat = target_word_idx[:, 1:].reshape(-1)  # (N * (T-1))
 
         # Create a mask to ignore the padding tokens
-        mask = (targets_flat != self.decoder._pad) # True is recorded where the padding tokens are recorded
+        mask = (targets_flat != self.decoder._pad) # True = No padding token, False = Padding token
         logits_flat = logits_flat[mask]
         targets_flat = targets_flat[mask]
 
         # Use PyTorch's built-in cross-entropy with label smoothing to compute the loss
         loss = F.cross_entropy(logits_flat, targets_flat, label_smoothing=eps)
-
         return loss
 
     def sample(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,

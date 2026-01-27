@@ -119,7 +119,7 @@ def plot_and_save_loss(loss_dir: str) -> None:
         all_losses = pd.Series(all_losses)  # Convert to a pd.Series for ease of use
         all_losses.index += 1  # Set the index to begin at 1
         # Create a plot and save it to the same directory
-        fig, ax = plt.subplots(1, 1, figsize=(10, 3))
+        fig, ax = plt.subplots(1, 1, figsize=(8, 3))
         ax.plot(all_losses, zorder=3)
         ax.set_ylabel("Loss")
         ax.set_xlabel("Training Step")
@@ -148,3 +148,34 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
     cfg["DataLoaderTrain"]["device"] = device
     cfg["DataLoaderVal"]["device"] = device
     return cfg
+
+
+def update_cache_and_plot(step: int, value: float, save_dir: str, name: str) -> None:
+    """
+    Records the (step, value) record in a csv, updated an the existing CSV saved to save_dir or creates a new
+    one. Also saves a plot of all the values as well.
+
+    :param step: The training timestep at which value was observed.
+    :param value: The float value of the variable of interest to record and plot.
+    :param save_dir: The directory in which to save the CSV and output plot.
+    :param name: The name of the variable e.g. val_cider etc.
+    :returns: None.
+    """
+    os.makedirs(save_dir, exist_ok=True) # Make sure this save directory is available for saving
+    file_path = os.path.join(save_dir, f"{name}.csv")
+    if os.path.exists(file_path): # Read in the prior data if it exists already
+        df = pd.read_csv(file_path, index_col=0)
+    else: # Otherwise start a new df that will be saved
+        df = pd.DataFrame(dtype=float)
+    df.loc[step, name] = value # Record the new value that was observed at time=step in df
+    df.to_csv(file_path, index=True) # Create a new file or update the existing CSV
+
+    # Create a plot and save it to the same directory as well
+    fig, ax = plt.subplots(1, 1, figsize=(8, 3))
+    ax.plot(df[name], zorder=3)
+    ax.set_ylabel(name)
+    ax.set_xlabel("Step")
+    ax.set_title(name)
+    ax.grid(color="lightgray", zorder=-3)
+    fig.savefig(os.path.join(save_dir, f"{name}_plot.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)

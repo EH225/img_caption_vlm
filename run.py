@@ -33,7 +33,7 @@ def pre_train_mae(config: dict) -> None:
     decoder = MAEdecoder(**config.get("MAEdecoder", {}))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
-    dataloader_train = get_dataloader(split='train', include_captions=True,
+    dataloader_train = get_dataloader(split='train_test', include_captions=False,
                                       **config.get("DataLoaderTrain", {}))
     dataloader_val = get_dataloader(split='val', include_captions=False,
                                     **config.get("DataLoaderVal", {}))

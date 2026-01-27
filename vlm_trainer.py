@@ -9,7 +9,7 @@ from torch.optim import AdamW
 import torch.nn as nn
 from typing import Tuple, List, Dict
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import plot_and_save_loss, denormalize_imagenet
+from utils import plot_and_save_loss, denormalize_imagenet, update_cache_and_plot
 import logging
 import psutil
 import pandas as pd
@@ -601,7 +601,7 @@ class TrainerCaptioning:
 
                 pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
                 for pred_caption, image_name in zip(pred_captions, batch["image_names"]):
-                    res[int(image_name)] = [pred_caption]
+                    res[int(image_name)] = [pred_caption.lower().strip()]
 
             batch_count += 1
             if batch_count >= max_batches:
@@ -720,6 +720,8 @@ class TrainerCaptioning:
                     val_loss, val_ppl, val_cider = self.compute_eval_scores(max_len)
                     msg = f"Validation Set NLL: {val_loss:.3f} PPL: {val_ppl:.3f} CIDEr: {val_cider:.3f}"
                     self.logger.info(msg)
+                    update_cache_and_plot(self.step, val_ppl, self.results_folder, "val_ppl")
+                    update_cache_and_plot(self.step, val_cider, self.results_folder, "val_cider")
 
                 # Periodically generate samples from the model
                 if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
@@ -824,8 +826,8 @@ class TrainerCaptioning:
                         greedy_captions, logprobs_g = self.vlm.sample(images, max_len=50, return_strings=True,
                                                                       track_gradients=False, temp=0.0)
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
-                greedy_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
-                                                                                   greedy_captions)}
+                greedy_captions = {int(img_id): [c.lower().strip()] for img_id, c
+                                   in zip(batch["image_names"], greedy_captions)}
 
                 # 2). Sample exploratory captions i.e. the policy rollout - track gradients here, gives us
                 # sequences sampled from the distribution of next predicted words, not just the greedy
@@ -841,8 +843,8 @@ class TrainerCaptioning:
                 # sampled_seqs is a list of strings of length N and sampled_logprobs is a torch.Tensor of
                 # float values of length N which has gradient tracking for computing the loss below
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
-                sampled_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
-                                                                                    sampled_captions)}
+                sampled_captions = {int(img_id): [c.lower().strip()] for img_id, c
+                                    in zip(batch["image_names"], sampled_captions)}
 
                 # 3). Compute rewards, the CIDEr difference between the greedy and exploratory captions
                 # The CIDEr scorer expects a dictionary of format {image_id: [string1, string2 ...], ...}
