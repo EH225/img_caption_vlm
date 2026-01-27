@@ -9,7 +9,7 @@ from torch.optim import AdamW
 import torch.nn as nn
 from typing import Tuple, List, Dict
 from utils import get_device, get_amp_dtype, decode_caption, normalize_patches, denormalize_patches
-from utils import plot_and_save_loss, denormalize_imagenet, cider_clean
+from utils import plot_and_save_loss, denormalize_imagenet
 import logging
 import psutil
 import pandas as pd
@@ -197,7 +197,7 @@ class TrainerMAE:
         """
         Reports the learning rates and weight decay parameter values of the vlm model.
         """
-        self.logger.info(f"Reporting learning rates and weight decay at setp={self.step}")
+        self.logger.info(f"Reporting learning rates and weight decay at step={self.step}")
         labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
         for i, group in enumerate(self.opt.param_groups): # Report all learning rates
             self.logger.info((f"{labels[i].ljust(16)}: lr = {group['lr']:.2e}, wd = "
@@ -249,32 +249,30 @@ class TrainerMAE:
                         # Convert to image patches and normalize for the MSE obj (N, num_patches, patch_dim)
                         norm_patches = normalize_patches(self.encoder.patch_embed.patchify(imgs))
                         loss = ((pred_img - norm_patches) ** 2).mean(dim=-1)  # Avg per pixel squared loss
-                        loss = (loss * mask).sum() / mask.sum()  # Compute the MSE on the masked
+                        loss = (loss * mask).sum() / max(mask.sum(), 1)  # Compute the MSE on the masked
                 else:
                     x_vis_latent, mask, ids_restore = self.encoder.encode_mae(imgs, mask_ratio)
                     pred_img, mask = self.decoder(x_vis_latent, mask, ids_restore)
                     # Convert to image patches and normalize for the MSE obj (N, num_patches, patch_dim)
                     norm_patches = normalize_patches(self.encoder.patch_embed.patchify(imgs))
                     loss = ((pred_img - norm_patches) ** 2).mean(dim=-1)  # Avg per pixel squared loss
-                    loss = (loss * mask).sum() / mask.sum()  # Compute the MSE on the masked
+                    loss = (loss * mask).sum() / max(mask.sum(), 1)  # Compute the MSE on the masked
 
                 if self.amp_dtype == torch.float16:
                     scaler.scale(loss).backward()
                     if self.grad_clip is not None:
                         scaler.unscale_(self.opt)  # Unscale before clipping
-                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
                     scaler.step(self.opt)  # Update the model parameters by taking a gradient step
                     scaler.update()
                 else:
                     loss.backward()
                     if self.grad_clip is not None:
-                        grad_norm_vlm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
-                        grad_norm_decoder = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.all_params, self.grad_clip)
                     # Update the model parameters by taking a gradient step
                     self.opt.step()
 
-                pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm_vlm=f"{grad_norm_vlm:.3f}",
-                                 grad_norm_decoder=f"{grad_norm_decoder:.3f}")
+                pbar.set_postfix(loss=f"{loss.item():.4f}", grad_norm=f"{grad_norm:.3f}")
 
                 self.scheduler.step()  # Update the learning rate scheduler
 
@@ -292,8 +290,7 @@ class TrainerMAE:
                 # Periodically generate samples from the model and save them to disk
                 if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
                     # Periodically log the loss and other training metrics
-                    self.logger.info((f"loss={loss.item():.4f}, grad_norm_vlm={grad_norm_vlm:.3f}, "
-                                      f"grad_norm_decoder={grad_norm_decoder:.3f}"))
+                    self.logger.info((f"loss={loss.item():.4f}, grad_norm={grad_norm:.3f}"))
                     self.report_lr_wd()
                     gpu_mem_used = torch.cuda.memory_allocated() / 1e9
                     cpu_mem_used = psutil.virtual_memory().used / 1e9
@@ -604,7 +601,7 @@ class TrainerCaptioning:
 
                 pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
                 for pred_caption, image_name in zip(pred_captions, batch["image_names"]):
-                    res[int(image_name)] = [cider_clean(pred_caption)]
+                    res[int(image_name)] = [pred_caption]
 
             batch_count += 1
             if batch_count >= max_batches:
@@ -629,7 +626,7 @@ class TrainerCaptioning:
         """
         Reports the learning rates and weight decay parameter values of the vlm model.
         """
-        self.logger.info(f"Reporting learning rates and weight decay at setp={self.step}")
+        self.logger.info(f"Reporting learning rates and weight decay at step={self.step}")
         labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
         for i, group in enumerate(self.opt.param_groups): # Report all learning rates
             self.logger.info((f"{labels[i].ljust(16)}: lr = {group['lr']:.2e}, wd = "
@@ -758,6 +755,7 @@ class TrainerCaptioning:
                         p.requires_grad = True
                     self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
                 del outputs, loss, images, captions
+                torch.cuda.empty_cache()
 
                 pbar.update(1)
 
@@ -826,7 +824,7 @@ class TrainerCaptioning:
                         greedy_captions, logprobs_g = self.vlm.sample(images, max_len=50, return_strings=True,
                                                                       track_gradients=False, temp=0.0)
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
-                greedy_captions = {int(img_id): [cider_clean(c)] for img_id, c in zip(batch["image_names"],
+                greedy_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
                                                                                    greedy_captions)}
 
                 # 2). Sample exploratory captions i.e. the policy rollout - track gradients here, gives us
@@ -843,7 +841,7 @@ class TrainerCaptioning:
                 # sampled_seqs is a list of strings of length N and sampled_logprobs is a torch.Tensor of
                 # float values of length N which has gradient tracking for computing the loss below
                 # Convert to a dict with structure: {image_id: [string caption]} for CIDEr eval
-                sampled_captions = {int(img_id): [cider_clean(c)] for img_id, c in zip(batch["image_names"],
+                sampled_captions = {int(img_id): [c] for img_id, c in zip(batch["image_names"],
                                                                                     sampled_captions)}
 
                 # 3). Compute rewards, the CIDEr difference between the greedy and exploratory captions

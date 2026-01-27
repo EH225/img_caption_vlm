@@ -20,7 +20,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, Dict, List
 from pycocotools.coco import COCO
-from utils import get_device, cider_clean
+from utils import get_device
 
 
 ############################
@@ -96,9 +96,9 @@ def clean_caption(caption: str) -> str:
     :param caption: A string caption for an image.
     :return: A cleaned version of the caption string.
     """
-    all_chars = set("abcdefghijklmnopqrstuvwxyz, ")  # Define the set of allowable characters
-    caption = caption.lower().strip()  # Set only the first letter to be capital, remove extra whitespace
-    caption = "".join([x for x in caption if x in all_chars])  # Remove atypical characters
+    caption = caption.lower().strip() # Lower case, remove excess white space
+    if len(caption) > 0 and caption[-1] not in [".?!"]: # Add a period to the end if no end punctuation exists
+        caption += "."
     return caption
 
 
@@ -193,7 +193,7 @@ def save_gts_dict(captions_path: str, output_path: str) -> None:
     output = defaultdict(list)
     for d in caption_dicts:
         for x in d:
-            output[x["image_id"]].append(cider_clean(clean_caption(x["caption"])))
+            output[x["image_id"]].append(clean_caption(x["caption"]))
     json.dump(output, open(output_path, "w", encoding="utf-8"), indent=4)
 
 
@@ -341,7 +341,7 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
 if __name__ == "__main__":
     # 0).  The steps below run a full data-set preprocessing pipeline of steps
     img_size = 224  # Process all the images to be a set size with H==W
-    vocab_size = 10000  # How many sub-word tokens we will create in our vocab
+    vocab_size = 8000  # How many sub-word tokens we will create in our vocab
     max_tokens_per_caption = 50  # Limit how many total tokens we can have for each caption, this includes
     # the special start and end tokens appended to the front and back
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/")

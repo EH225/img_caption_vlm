@@ -1239,40 +1239,23 @@ class VisionLanguageModel(nn.Module):
         :returns: The sum of negative log-likelihood across all timesteps in the decoding. Log-likelihood
             values are not computed for the padding tokens.
         """
-        # Compute to a prob distribution over the vocabulary for each prediction timestep from the decoder,
-        # decoder_outputs is what would be used at each timestep, we can process them all at once since we
-        # have them all here at once as one big tensor of size (N, T, V)
-        log_prob = F.log_softmax(decoder_outputs, dim=-1)  # Softmax along the last dim, then take the log
+        N, T, V = decoder_outputs.shape # Unpack shape of the inputs
 
-        # Zero out, probabilities for which we have nothing in the target text i.e. the padding, create a bool
-        # mask of 0s and 1s by checking that each entry is not equal to the <pad> token, 0s == padding token
-        target_masks = (target_word_idx != self.decoder._pad).float()  # (B, T)
+        # Flatten the batch and sequence dims for passing the data into F.cross_entropy, make sure to align
+        # the predictions with the ground truths. The first token of target_word_idx is <s> so we skip that
+        # one and take the rest. The decoder_outputs are the predictions after observing the true tokens
+        # up through index i so they're 1 index position ahead of the target_word_idx values
+        logits_flat = decoder_outputs[:, :-1, :].reshape(-1, V)  # (N * (T-1), V)
+        targets_flat = target_word_idx[:, 1:].reshape(-1)  # (N * (T-1))
 
-        # Compute the log probability of generating the true target words provided in this obs i.e. compute
-        # the cross-entropy loss by pulling out the model's y-hat values for the true target words. For each
-        # word in each sentence, pull out the y_hat prob associated with the true target word at time t.
-        # log_prob is (N, T, V) and describes the probability distribution over the next word after the
-        # current time step t. I.e. the first Y_t token is <s> and the first y_hat is the distribution of
-        # what the model thinks should come afterwards. Hence log_prob[:, :-1, :] aligns wtih the true Y_t
-        # words i.e. target_word_idx[:, 1:]. T = tgt_len includes <s> at the start and </s> at the end. We
-        # don't want to include the prob of <s> but we do want to include the prob of predicting </s> to end
-        # the sentence.
-        target_words_log_prob = torch.gather(log_prob[:, :-1, :], index=target_word_idx[:, 1:].unsqueeze(-1),
-                                             dim=-1).squeeze(-1)  # (B, T - 1) result
-        if eps > 0:  # Apply label smoothing, put (1-eps) weight on the true class and eps / (|V|-1) on all
-            # others when computing the cross-entropy loss values. From the above, we already have the values
-            # for the true class label, so we can down-weight that by (1-eps) and then add to reach the goal
-            sum_all_others = log_prob[:, :-1, :].sum(-1) - target_words_log_prob  # Sum log prob of all others
-            mean_all_others = sum_all_others / (log_prob.shape[-1] - 1)  # Divide by (|V| - 1) to normalize
-            # Take the weighted sum, down-weight the log-prob of the true class to (1-eps) and add all the
-            # others at a weight of eps each i.e. the sum of all others gets a collective weight of eps
-            target_words_log_prob = target_words_log_prob * (1 - eps) + mean_all_others * (eps)
+        # Create a mask to ignore the padding tokens
+        mask = (targets_flat != self.decoder._pad) # True is recorded where the padding tokens are recorded
+        logits_flat = logits_flat[mask]
+        targets_flat = targets_flat[mask]
 
-        # Zero out the y_hat values for the padding tokens so that they don't contribute to the sum
-        target_words_log_prob = target_words_log_prob * target_masks[:, 1:]  # (b, tgt_len - 1)
+        # Use PyTorch's built-in cross-entropy with label smoothing to compute the loss
+        loss = F.cross_entropy(logits_flat, targets_flat, label_smoothing=eps)
 
-        # Return the avg negative log-likelihoods across all target tokens, across all captions
-        loss = -target_words_log_prob.sum() / target_masks[:, 1:].sum()  # Compute 1 torch.float loss value
         return loss
 
     def sample(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,
@@ -1297,6 +1280,7 @@ class VisionLanguageModel(nn.Module):
         """
         assert temp >= 0, f"temp must be a value >= 0, got {temp}"
         max_len = self.decoder.max_len if max_len is None else max_len
+        device = imgs.device # Infer the correct device from the images passed in
 
         was_training = self.training
         self.train() if track_gradients else self.eval() # Switch to training mode if gradient tracking
@@ -1309,14 +1293,14 @@ class VisionLanguageModel(nn.Module):
 
             # Create an empty captions tensor to record the outputs, where all tokens are NULL initially
             captions = torch.full((N, max_len), self._pad, dtype=torch.long,
-                                  device=imgs.device)  # Record ints (N, max_len)
+                                  device=device)  # Record ints (N, max_len)
 
             # Create a starting partial caption to begin to decoding sequence for each using the start token
-            partial_captions = torch.full((N, 1), self._start, dtype=torch.long, device=imgs.device)
-            log_probs_sum = torch.zeros(N, dtype=torch.float).to(self.device_param.device)
+            partial_captions = torch.full((N, 1), self._start, dtype=torch.long, device=device)
+            log_probs_sum = torch.zeros(N, dtype=torch.float).to(device)
 
             # Record True for each sentence in the batch if it has reached the </s> end token
-            eos_mask = torch.zeros(N, dtype=bool, device=imgs.device)
+            eos_mask = torch.zeros(N, dtype=bool, device=device)
             for t in range(max_len):  # Run the decoding time steps to fill in the caption word idx
                 # Predict the next token index for all images in the input batch
                 logits = self.decoder.decode_step((img_features if t == 0 else None), partial_captions)
@@ -1436,4 +1420,4 @@ class VisionLanguageModel(nn.Module):
         outputs = [self._beam_search(imgs[i:i + 1], beam_size, alpha, max_len, return_strings)
                    for i in range(imgs.shape[0])]
         self.train() if was_training else self.eval()
-        return outputs if return_strings else torch.cat(outputs, dim=0)
+        return outputs

@@ -18,7 +18,7 @@ def get_device():
     """
     Auto-detects what hardware is available and returns the appropriate device.
 
-    :returns: A torch device denoting what device is available.
+    :returns: A torch device denoting what device is available as a torch.device, not a string.
     """
     if torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
@@ -37,38 +37,25 @@ def get_amp_dtype(device: str = "cuda"):
     :returns: A torch float type for auto mixed precision training.
     """
     assert isinstance(device, str), "device must be a str"
-    if device != "cuda" or not torch.cuda.is_available():
-        return torch.float16
-
-    # Get compute capability (major, minor)
-    major, minor = torch.cuda.get_device_capability()
-
-    # Ampere (8.x), Hopper (9.x), Ada (8.9) → BF16 supported
-    bf16_supported = (major >= 8)
-
-    return torch.bfloat16 if bf16_supported else torch.float16
+    if device == "cuda" and torch.cuda.is_available():
+        major, _ = torch.cuda.get_device_capability()
+        return torch.bfloat16 if major >= 8 else torch.float16
+    else:
+        return torch.float32
 
 
-def decode_caption(word_ids: Union[np.ndarray, List[int]], sp_model) -> str:
+def decode_caption(word_ids: Union[torch.Tensor, np.ndarray, List[int]], sp_model) -> str:
     """
-    Converts a list or np.ndarray of sub-word token ids to an output string sentences. Removes the special
-    start <s>, end </s>, and <pad> padding tokens.
+    Converts an input torch.Tensor, np.ndarray, or list of integer sub-word token ids to an output string
+    sentence. Removes the special start <s>, end </s>, and <pad> padding tokens and outputs a string.
 
-    :param word_ids: A numpy array of integers or a list of integers that correspond to sub-piece tokens.
+    :param word_ids: A torch.Tensor, np.ndarray or list of integers that correspond to sub-piece tokens IDs.
     :param sp_model: A sub-piece token model for converting token indices to strings.
     :returns: A string that is the decoded word sequence represented by the word tokens.
     """
-    word_ids = word_ids.tolist() if hasattr(word_ids, "tolist") else word_ids  # Also accept an np.ndarray
-
-    output = []  # Filter the word token IDs to remove the special tokens
-    for i in word_ids:
-        if i == sp_model.eos_id():  # Stop early if we see the end sentence token
-            break
-        if i in (sp_model.pad_id(), sp_model.bos_id()):  # Skip padding and start of sentence tokens
-            continue
-        output.append(i)
-
-    return "".join(sp_model.decode(output)).replace("_", "")
+    # Accepts a np.ndarray, a torch.Tensor or a list
+    word_ids = word_ids.tolist() if hasattr(word_ids, "tolist") else word_ids
+    return sp_model.decode(word_ids)
 
 
 def normalize_patches(patches: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -161,10 +148,3 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
     cfg["DataLoaderTrain"]["device"] = device
     cfg["DataLoaderVal"]["device"] = device
     return cfg
-
-
-def cider_clean(s: str) -> str:
-    """
-    Cleans a caption for CIDEr evaluation by removeing periods, commas, and extra white space.
-    """
-    return " ".join(s.lower().replace('.', '').replace(',', '').split())

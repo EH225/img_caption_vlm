@@ -117,7 +117,6 @@ def train_scst(config: Dict) -> None:
                        lambda_xe=config["TrainerSCST"].get("lambda_xe", 0.1))
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training Pipeline Module")
     parser.add_argument("--config", help="The name of the config file to use for training")
