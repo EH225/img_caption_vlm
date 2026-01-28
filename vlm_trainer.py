@@ -561,12 +561,13 @@ class TrainerCaptioning:
         :returns: None. Weights are loaded into the model from disk.
         """
         if self.scst is False: # Stage 2 supervised training with a cross-entropy loss
-            file_path = f"../pretrain/checkpoints/model-{milestone}.pt"
-            checkpoint_path = os.path.join(self.results_folder, file_path)
-            self.logger.info(f"Loading pretrained encoder model weights from {checkpoint_path}.")
-            checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
-            # Re-instate the model weights from the checkpoint data read in from disk
-            self.vlm.encoder.load_state_dict(checkpoint_data["model_encoder"])
+            if isinstance(self.vlm.encoder, ImageEncoder): # Only if the encoder is the trainable ImageEncoder
+                file_path = f"../pretrain/checkpoints/model-{milestone}.pt"
+                checkpoint_path = os.path.join(self.results_folder, file_path)
+                self.logger.info(f"Loading pretrained encoder model weights from {checkpoint_path}.")
+                checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
+                # Re-instate the model weights from the checkpoint data read in from disk
+                self.vlm.encoder.load_state_dict(checkpoint_data["model_encoder"])
         else: # Stage 3 SCST fine-tuning, load the pre-trained model from the captioning folder
             file_path = f"../captioning/checkpoints/model-{milestone}.pt"
             checkpoint_path = os.path.join(self.results_folder, file_path)
