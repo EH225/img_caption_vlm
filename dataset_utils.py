@@ -96,8 +96,8 @@ def clean_caption(caption: str) -> str:
     :param caption: A string caption for an image.
     :return: A cleaned version of the caption string.
     """
-    caption = caption.lower().strip() # Lower case, remove excess white space
-    if len(caption) > 0 and caption[-1] not in [".?!"]: # Add a period to the end if no end punctuation exists
+    caption = caption.lower().strip().rstrip("!?.") # Lower case, remove excess white space, remove end punct
+    if len(caption) > 0 and caption[-1] not in ".?!": # Add a period to the end for consistent punctuation
         caption += "."
     return caption
 

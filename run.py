@@ -7,10 +7,10 @@ CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, CURRENT_DIR)
 
 import sentencepiece as spm
-from torch_models import ImageEncoder, MAEdecoder, LanguageDecoder, VisionLanguageModel
+from torch_models import ImageEncoder, MAEdecoder, CLIPEncoder, LanguageDecoder, VisionLanguageModel
 from dataset_utils import get_dataloader
 from vlm_trainer import TrainerCaptioning, TrainerMAE
-from utils import read_config
+from utils import read_config, get_device
 from typing import Dict
 import argparse, shutil, json
 
@@ -59,7 +59,11 @@ def train_captioning_model(config: Dict) -> None:
     sp_model.load(os.path.join(config["dataset_dir"], "vocab.model"))
 
     # 2).Init the encoder and decoder model for training and use them to create a vision-language model
-    vlm = VisionLanguageModel(encoder=ImageEncoder(**config.get("ImageEncoder", {})),
+    if config.get("use_clip_encoder", True):
+        encoder = CLIPEncoder(device=get_device())
+    else:
+        ImageEncoder(**config.get("ImageEncoder", {}))
+    vlm = VisionLanguageModel(encoder=encoder,
                               decoder=LanguageDecoder(sp_model=sp_model, **config.get("LanguageDecoder", {})))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
@@ -130,6 +134,6 @@ if __name__ == "__main__":
         if os.path.exists(debug_results_dir):  # Check if the output results directory exists
             shutil.rmtree(debug_results_dir)  # Remove entire results directory
 
-    pre_train_mae(config)  # Run model pre-training
+    # pre_train_mae(config)  # Run model pre-training
     train_captioning_model(config)  # Run model training
-    train_scst(config) # Run SCST fine-tuning on the pre-trained model
+    # train_scst(config) # Run SCST fine-tuning on the pre-trained model

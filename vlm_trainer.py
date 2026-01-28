@@ -460,9 +460,12 @@ class TrainerCaptioning:
 
         # Configure the optimizer, use 1/8 the learning rate for all encoder parameters and different weight
         # decays for the encoder vs decoder parameters
-        enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.125)
         dec_groups = get_param_groups(self.vlm.decoder, wd_decoder, lr_start)
-        self.opt = AdamW(enc_groups + dec_groups, betas=adam_betas)
+        if isinstance(vlm.encoder, ImageEncoder): # If the encoder is the trainable ImageEncoder
+            enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.125)
+            self.opt = AdamW(enc_groups + dec_groups, betas=adam_betas)
+        else: # Otherwise the encoder will be the frozen CLIP model, don't add its params to the optimizer
+            self.opt = AdamW(dec_groups, betas=adam_betas)
 
         # 5). Configure a learning rate scheduler for training with warm-up and cosine annealing
         warmup_steps = int(train_num_steps * warm_up_pct)  # Slowly ramp up the LR from very low to peak

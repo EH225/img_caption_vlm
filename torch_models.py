@@ -10,6 +10,7 @@ import numpy as np
 import copy
 from utils import decode_caption, normalize_patches
 from typing import List, Union, Tuple
+import clip
 
 
 ########################
@@ -885,6 +886,60 @@ class ImageEncoder(nn.Module):
         This is the same as the encode method, see help(self.encode) for details.
         """
         return self.encode(imgs)
+
+
+################################
+### CLIP Image Encoder Model ###
+################################
+# TODO: Section marker
+
+class CLIPEncoder(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.device = device
+
+        self.img_size = 224
+        self.patch_size = 16
+        self.in_channels = 3
+        self.embed_dim = 768
+        self.num_patches = 196
+
+        # Load CLIP ViT-B/16 (197 tokens, 768 dim)
+        clip_model, _ = clip.load("ViT-B/16", device=device)
+        self.visual = clip_model.visual
+
+        # Freeze all parameters of the CLIP encoder model
+        for p in self.visual.parameters():
+            p.requires_grad = False
+
+        self.visual.eval()
+
+    @torch.no_grad()
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass throguh the CLIP encoder to produce deep latent image patch representations.
+
+        images: (N, 3, 224, 224) in [0, 1] or normalized beforehand
+        returns: (N, 197, 768) = CLS + 196 patches
+        """
+        # --- This is basically CLIP's internal visual forward ---
+        x = self.visual.conv1(images)            # (N, 768, 14, 14)
+        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.permute(0, 2, 1)                    # (N, 196, 768)
+
+        cls = self.visual.class_embedding.to(x.dtype)
+        cls = cls.unsqueeze(0).expand(x.shape[0], 1, -1)
+        x = torch.cat([cls, x], dim=1)            # (N, 197, 768)
+
+        x = x + self.visual.positional_embedding
+        x = self.visual.ln_pre(x)
+
+        x = x.permute(1, 0, 2)                    # (197, N, 768)
+        x = self.visual.transformer(x)
+        x = x.permute(1, 0, 2)                    # (N, 197, 768)
+
+        x = self.visual.ln_post(x)
+        return x
 
 
 ######################################
