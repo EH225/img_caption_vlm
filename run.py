@@ -60,6 +60,7 @@ def train_captioning_model(config: Dict) -> None:
 
     # 2).Init the encoder and decoder model for training and use them to create a vision-language model
     if config.get("use_clip_encoder", True):
+        print("Using the CLIP encoder")
         encoder = CLIPEncoder(device=get_device())
     else:
         encoder = ImageEncoder(**config.get("ImageEncoder", {}))
