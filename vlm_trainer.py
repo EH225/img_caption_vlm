@@ -753,7 +753,11 @@ class TrainerCaptioning:
                     images = batch["images"][indices].to(self.device)
                     captions = batch["captions"][indices].to(self.device)
                     image_names = [batch["image_names"][int(idx)] for idx in indices]
-                    pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
+                    if self.amp_dtype is not None:
+                        with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                            pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
+                    else:
+                        pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
                     actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
                     # Print some side-by-side comparisons of the predicted vs actual captions
                     for yhat, y, img_name in zip(pred_captions, actual_captions, image_names):
