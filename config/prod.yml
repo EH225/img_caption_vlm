@@ -1,6 +1,6 @@
 # This config contains debug settings for prod training
 dataset_dir: "dataset/preprocessed/"
-use_clip_encoder: True,
+use_clip_encoder: True
 ImageEncoder: 
     img_size: 224
     patch_size: 16
