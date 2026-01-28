@@ -576,7 +576,7 @@ class TrainerCaptioning:
             # Re-instate the model weights from the checkpoint data read in from disk
             self.vlm.load_state_dict(checkpoint_data["model"])
 
-    def compute_eval_scores(self, max_len: int = 50, max_batches: int = 10) -> Tuple[float]:
+    def compute_eval_scores(self, max_len: int = 50, max_batches: int = 10, eps: float = 0.1) -> Tuple[float]:
         """
         This method computes the negative log-likelihood, perplexity, and CIDEr score on the validation data
         set using the current model weights. Calling this method periodically during training is helpful for
@@ -598,12 +598,20 @@ class TrainerCaptioning:
             captions = batch["captions"].to(self.device, non_blocking=True)  # (N, tgt_max_len)
 
             with torch.no_grad():  # No longer training, no gradient tracking needed
-                outputs = self.vlm(images, captions)
-                loss = self.vlm.compute_loss(outputs, captions)
+                if self.amp_dtype is not None:
+                    with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                        outputs = self.vlm(images, captions)  # (N, T, V)
+                        loss = self.vlm.compute_loss(outputs, captions, eps)
+                        pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
+                else:
+                    outputs = self.vlm(images, captions)  # (N, T, V)
+                    loss = self.vlm.compute_loss(outputs, captions, eps)
+                    pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
+
                 # Record the average per token negative log likelihood and how many obs are in this batch
                 losses.append((loss.item(), images.shape[0]))
 
-                pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
+                # Record the prediction captions in a dictionary to match up against gts_val
                 for pred_caption, image_name in zip(pred_captions, batch["image_names"]):
                     res[int(image_name)] = [pred_caption.lower().strip()]
 
