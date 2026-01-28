@@ -225,25 +225,41 @@ class CocoCaptionDataset(Dataset):
     Dataset object for COCO image captioning data.
     """
 
-    def __init__(self, image_dir: str, caption_path: str, transform: transforms.Compose):
+    def __init__(self, dataset_dir: str, split: str, load_captions: bool, transform: transforms.Compose):
         """
-        Initializes a dataset object for the COCO image-caption data.
+        Initializes a dataset object for the COCO image-captioning dataset.
 
-        :param image_dir: A directory where the pre-processed images are saved.
-        :param caption_path: A path to where the pre-processed {split}_captions.pt file is saved. If set to
-            None, then no captions data will be loaded e.g. for the test set where no caption data is
-            provided in the COCO dataset. The captions in each batch will be a tensor of all zeros of size
-            (N, 1).
+        The dataset structure is assumed to follow the pre-defined structure of the preprocessed directory
+        denoted by dataset_dir.
+
+        :param dataset_dir: A directory containing all the data (images, captions etc.)
+        :param split: The image ids to include from image_dir which holds all images from all splits. This
+            can be 1 string e.g. "val" or a space separated string e.g. "train test" to include multiple
+            splits. This determines which image _ids are part of this data-loader.
+        :param load_captions: If set to True, then the captions data associated with the split param are
+            also loaded. If False, then no captions data is loaded and a tensor of all zeros of size (N, 1)
+            is returned in each batch.
         :param transform: A composition of torch vision transforms to apply to each image before being added
             to a batch.
         """
-        self.image_dir = image_dir  # The directory containing all the images
-        if caption_path is not None:  # Load in the captions data if available
-            self.captions = torch.load(caption_path, map_location="cpu", weights_only=False)
-        else:  # Otherwise no captions data will be provided in the batches
-            self.captions = None
-        self.image_ids = [int(x.replace(".jpg", ""))
-                          for x in os.listdir(self.image_dir) if x.endswith(".jpg")]
+        self.image_dir = os.path.join(dataset_dir, "images") # The directory containing all the images
+        self.image_ids = []
+        for s in split.split(): # Separate on white space, read in all the image IDs for the splits defined
+            self.image_ids.extend(pd.read_csv(os.path.join(dataset_dir, f"image_ids/{s}.csv"),
+                                              header=None).iloc[:, 0].astype(int).tolist())
+
+        self.caption_dir = os.path.join(dataset_dir, "captions")
+        self.captions = None
+        if load_captions:
+            for s in split.split(): # Separate on white space, read in all captions for each split
+                captions_path = os.path.join(self.caption_dir, f"{s}_captions.pt")
+                captions = torch.load(captions_path, map_location="cpu", weights_only=False)
+                if self.captions is None:
+                    self.captions = captions
+                else: # Combine together the captions loaded from each split
+                    self.captions = self.captions_1 | captions
+            assert self.captions.keys() == set(self.image_ids), "caption ids and image ids don't match"
+
         self.transform = transform  # Used to transform the images before they are returned in the batch
 
     def __len__(self):
@@ -292,9 +308,6 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     device = device if device is not None else get_device().type  # Auto-detect the available hardware
     assert isinstance(device, str), "device expected to be a string"
     dataset_dir = os.path.join(CURRENT_DIR, "dataset/preprocessed/") if dataset_dir is None else dataset_dir
-    image_dir = os.path.join(dataset_dir, f"images/{split}2017")
-    caption_path = os.path.join(dataset_dir, f"captions/{split}_captions.pt")
-    caption_path = caption_path if include_captions else None
 
     if add_augmentation is True:  # Add in data-augmentations
         image_transforms = transforms.Compose([
@@ -323,7 +336,7 @@ def get_dataloader(split: str = "train", batch_size: int = 128, device: str = No
     vocab_model_path = os.path.join(dataset_dir, "vocab.model")
     sp = spm.SentencePieceProcessor()
     sp.load(vocab_model_path)
-    dataset = CocoCaptionDataset(image_dir, caption_path, image_transforms)
+    dataset = CocoCaptionDataset(dataset_dir, split, include_captions, image_transforms)
     print(f"{split} dataloader device: {device}")
     if device == "cuda":
         num_workers, pin_memory, persistent_workers, prefetch_factor = 4, True, True, 16
@@ -349,8 +362,11 @@ if __name__ == "__main__":
     # 1). Pre-process the training, validation, and test images, down-size and pad to [224 x 224 x 3]
     for split in ["train", "val", "test"]:
         original_img_dir = os.path.join(dataset_dir, f"coco_original/images/{split}2017")
-        output_image_dir = os.path.join(dataset_dir, f"preprocessed/images/{split}2017")
+        output_image_dir = os.path.join(dataset_dir, "preprocessed/images/") # Save all into 1 folder
         preprocess_images(original_img_dir, output_image_dir, img_size)
+        image_ids = [x.replace(".jpg", "") for x in os.listdir(original_img_dir) if x.endswith(".jpg")]
+        pd.DataFrame(image_ids).to_csv(os.path.join(dataset_dir, f"preprocessed/image_ids/{split}.csv"),
+                                                    index=False, header=None)
 
     # 2). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")
