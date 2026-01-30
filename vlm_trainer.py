@@ -422,9 +422,7 @@ class TrainerCLIP:
         self.results_folder = results_folder  # A directory where the checkpoints will be saved
         self.checkpoints_folder = os.path.join(self.results_folder, "checkpoints/")
         self.losses_folder = os.path.join(self.results_folder, "losses/")
-        self.samples_folder = os.path.join(self.results_folder, "samples/")
-        for directory in [self.results_folder, self.checkpoints_folder,
-                          self.losses_folder, self.samples_folder]:
+        for directory in [self.results_folder, self.checkpoints_folder, self.losses_folder]:
             os.makedirs(directory, exist_ok=True)  # Create the directory if not already there
 
         # 2). Set up logging during training
