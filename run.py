@@ -7,9 +7,10 @@ CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, CURRENT_DIR)
 
 import sentencepiece as spm
-from torch_models import ImageEncoder, MAEdecoder, CLIPEncoder, LanguageDecoder, VisionLanguageModel
+from torch_models import ImageEncoder, MAEdecoder, LanguageDecoder, VisionLanguageModel
+from torch_models import CLIPimgEncoder, CLIPtextEncoder
 from dataset_utils import get_dataloader
-from vlm_trainer import TrainerCaptioning, TrainerMAE
+from vlm_trainer import TrainerMAE, TrainerCLIP, TrainerCaptioning
 from utils import read_config, get_device
 from typing import Dict
 import argparse, shutil, json
@@ -17,8 +18,42 @@ import argparse, shutil, json
 
 def pre_train_mae(config: dict) -> None:
     """
-    Runs MAE pre-training on vision-transformer encoder model using the ImageEncoder, MAEdecoder, and
-    TrainerMAE classes with the configurations specified in the config file.
+    Runs MAE pre-training on the vision-transformer encoder model using the ImageEncoder, MAEdecoder, and
+    TrainerMAE classes with the configurations specified in the config file. This pre-training loop trains
+    a vision-transformer (ViT) model from scratch (ImageEncoder) on an image patch reconstrucion loss
+    objective, which teaches the image encoder to learn low-level feature structure.
+
+    :param config: A config dictionary containing parameters for various aspects of the training loop and
+        model parameters for how to configure the model parameters.
+    :returns: None. Results are saved to disk.
+    """
+    # 1).Init the encoder and decoder model for training
+    encoder = ImageEncoder(**config.get("ImageEncoder", {}))
+    decoder = MAEdecoder(**config.get("MAEdecoder", {}))
+
+    # 2). Construct the COCO training dataset loader and validation dataset loader
+    dataloader_train = get_dataloader(split='train test', include_captions=False,
+                                      **config.get("DataLoaderTrain", {}))
+    dataloader_val = get_dataloader(split='val', include_captions=False,
+                                    **config.get("DataLoaderVal", {}))
+
+    # 3). Configure the training pipeline with the TrainerMAE object
+    trainer = TrainerMAE(encoder, decoder, dataloader_train, dataloader_val, **config.get("TrainerMAE", {}))
+
+    # 4). Train the model to completion
+    trainer.train(mask_ratio=config["TrainerMAE"].get("mask_ratio", 0.75))
+
+
+def pre_train_clip(config: dict) -> None:
+    """
+    Runs CLIP style pre-training on the vision-transformer encoder model using the ImageEncoder,
+    CLIPtextEncoder, and TrainerCLIP classes with the configurations specified in the config file. This step
+    of pre-training generally follows MAE pre-training and trains a vision-transformer (ViT) (ImageEncoder)
+    to associate images with textual descriptions, which teaches the image encoder to learn semantic image
+    understanding by maximizing the cosine similarity of images and their captions in a shared latent space
+    while minimzing the cosine similarity of off-diagonal (image, caption) pairs.
+
+    This training loop uses the pre-trained CLIP text encoder for stability and transfer learning purposes.
 
     :param config: A config dictionary containing parameters for various aspects of the training loop and
         model parameters for how to configure the model parameters.
@@ -28,21 +63,22 @@ def pre_train_mae(config: dict) -> None:
     sp_model = spm.SentencePieceProcessor()
     sp_model.load(os.path.join(config["dataset_dir"], "vocab.model"))
 
-    # 2).Init the encoder and decoder model for training
-    encoder = ImageEncoder(**config.get("ImageEncoder", {}))
-    decoder = MAEdecoder(**config.get("MAEdecoder", {}))
+    # 2).Init the image encoder and text encoder model for training
+    img_encoder = ImageEncoder(**config.get("ImageEncoder", {})) # Init the trainable image encoder
+    text_encoder = CLIPtextEncoder(get_device()) # Load the pre-trained, frozen CLIP text encoder.
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
-    dataloader_train = get_dataloader(split='train test', include_captions=False,
+    dataloader_train = get_dataloader(split='train', include_captions=True,
                                       **config.get("DataLoaderTrain", {}))
-    dataloader_val = get_dataloader(split='val', include_captions=False,
+    dataloader_val = get_dataloader(split='val', include_captions=True,
                                     **config.get("DataLoaderVal", {}))
 
-    # 4). Configure the training pipeline with the TrainerMAE object
-    trainer = TrainerMAE(encoder, decoder, dataloader_train, dataloader_val, **config.get("TrainerMAE", {}))
+    # 4). Configure the training pipeline with the TrainerCLIP object
+    trainer = TrainerCLIP(img_encoder, text_encoder, sp_model, dataloader_train, dataloader_val,
+                         **config.get("TrainerCLIP", {}))
 
-    # 5). Train the model to completion
-    trainer.train(mask_ratio=config["TrainerMAE"].get("mask_ratio", 0.75))
+    # 5). Train the model to completion on the CLIP pre-training task
+    trainer.train()
 
 
 def train_captioning_model(config: Dict) -> None:
@@ -61,7 +97,7 @@ def train_captioning_model(config: Dict) -> None:
     # 2).Init the encoder and decoder model for training and use them to create a vision-language model
     if config.get("use_clip_encoder", True):
         print("Using the CLIP encoder")
-        encoder = CLIPEncoder(device=get_device())
+        encoder = CLIPimgEncoder(device=get_device())
     else:
         encoder = ImageEncoder(**config.get("ImageEncoder", {}))
     vlm = VisionLanguageModel(encoder=encoder,
@@ -135,6 +171,9 @@ if __name__ == "__main__":
         if os.path.exists(debug_results_dir):  # Check if the output results directory exists
             shutil.rmtree(debug_results_dir)  # Remove entire results directory
 
-    pre_train_mae(config)  # Run model pre-training
-    train_captioning_model(config)  # Run model training
-    train_scst(config) # Run SCST fine-tuning on the pre-trained model
+    if not config.get("use_clip_encoder", False): # Run pre-training on the image encoder if not using the
+        # pre-trained, frozen CLIP image encoder
+        pre_train_mae(config)  # Run MAE pre-training to train the image encoder
+        pre_train_clip(config) # Run CLIP-style image-language pre-training to train the image encoder
+    train_captioning_model(config)  # Run supervised teacher-forcing training to train a caption decoder
+    train_scst(config) # Run SCST fine-tuning on the VLM to optimize CIDEr score

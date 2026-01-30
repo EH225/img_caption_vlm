@@ -893,8 +893,13 @@ class ImageEncoder(nn.Module):
 ################################
 # TODO: Section marker
 
-class CLIPEncoder(nn.Module):
+class CLIPimgEncoder(nn.Module):
     def __init__(self, device):
+        """
+        Instantiates an encoder model that passes images through the CLIP encoder from OpenAI with frozen
+        parameters. This model can be used interchangable with the ImageEncoder class for supervised training
+        on the captions dataset.
+        """
         super().__init__()
         self.device = device
 
@@ -917,10 +922,10 @@ class CLIPEncoder(nn.Module):
     @torch.no_grad()
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass throguh the CLIP encoder to produce deep latent image patch representations.
+        Forward pass through the CLIP encoder to produce deep latent image patch representations.
 
-        images: (N, 3, 224, 224) in [0, 1] or normalized beforehand
-        returns: (N, 197, 768) = CLS + 196 patches
+        :param images: An input image tensor of size (N, 3, 224, 224).
+        :returns: A tensor of laten image representations of size: (N, 197, 768) = CLS + 196 patches
         """
         # --- This is basically CLIP's internal visual forward ---
         x = self.visual.conv1(images)            # (N, 768, 14, 14)
@@ -939,6 +944,44 @@ class CLIPEncoder(nn.Module):
         x = x.permute(1, 0, 2)                    # (N, 197, 768)
 
         x = self.visual.ln_post(x)
+        return x
+
+
+###############################
+### CLIP Text Encoder Model ###
+###############################
+# TODO: Section marker
+
+class CLIPtextEncoder(nn.Module):
+    def __init__(self, device):
+        """
+        Instantiates a text encoder model that passes text tokens through the CLIP text encoder from OpenAI
+        with frozen parameters. This model is used during CLIP-style MAE pre-training.
+        """
+        super().__init__()
+
+        # Load CLIP ViT-B/16 pre-trained model
+        self.model, _ = clip.load("ViT-B/32", device=device)
+        self.tokenizer = clip.tokenize # Text tokenizer CLIP expects
+        self.embed_dim = self.model.text_projection.shape[1] # 512
+        self.device = device
+
+        # Freeze all parameters of the CLIP encoder model
+        for p in self.model.parameters():
+            p.requires_grad = False
+
+        self.model.eval()
+
+    @torch.no_grad()
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the CLIP text encoder to produce deep latent representations of input text.
+
+        :param tokens: A tensor of size (N, T) containing image caption text tokens.
+        :returns: A tensor of size (N, E=512) containing deep latent representations of each input caption.
+        """
+        with torch.no_grad():
+            x = self.model.encode_text(tokens)  # (N, E=512)
         return x
 
 

@@ -1,6 +1,7 @@
 # This config contains debug settings for prod training
 dataset_dir: "dataset/preprocessed/"
-use_clip_encoder: True
+use_clip_encoder: False
+
 ImageEncoder: 
     img_size: 224
     patch_size: 16
@@ -48,10 +49,22 @@ TrainerMAE:
     grad_clip: 1.0
     sample_every: 5000
     save_every: 10000
-    results_folder: "results/pretrain"
+    results_folder: "results/pretrain_mae"
     use_amp: True
     use_latest_checkpoint: 1
     mask_ratio: 0.75
+
+TrainerCLIP: 
+    lr_start: 1.0e-4
+    lr_end: 1.0e-6
+    weight_decay: 0.05
+    train_num_steps: 100000
+    grad_clip: 1.0
+    sample_every: 5000
+    save_every: 10000
+    results_folder: "results/pretrain_clip"
+    use_amp: True
+    use_latest_checkpoint: 1
 
 TrainerCaptioning:
     lr_start: 2.0e-4
@@ -65,7 +78,7 @@ TrainerCaptioning:
     sample_every: 500
     save_every: 10000
     eval_every: 500
-    results_folder: "results/captioningCLIP"
+    results_folder: "results/captioning"
     use_amp: True
     use_latest_checkpoint: 1
     eps: 0.1
