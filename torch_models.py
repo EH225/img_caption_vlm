@@ -80,11 +80,12 @@ def word_dropout(word_idx_seq: torch.Tensor, dropout: float = 0.1, pad_idx: int 
     :returns A tensor of the same shape (N, T) as the input word_idx_seq with some tokens ids randomly
         replaced with the padding token ID.
     """
-    mask = (torch.rand_like(word_idx_seq.float()) < dropout) & (word_idx_seq != pad_idx) # (N, T)
-    mask[0, :] = False # Never mask the first BOS <s> special token that begins the sentence
+    mask = (torch.rand_like(word_idx_seq.float()) < dropout) & (word_idx_seq != pad_idx)  # (N, T)
+    mask[0, :] = False  # Never mask the first BOS <s> special token that begins the sentence
     word_idx_seq = word_idx_seq.clone()
     word_idx_seq[mask] = pad_idx
-    return word_idx_seq # (N, T)
+    return word_idx_seq  # (N, T)
+
 
 NO_DECAY_LAYERS = (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.GroupNorm, nn.Embedding)
 
@@ -196,10 +197,10 @@ class MultiHeadedAttention(nn.Module):
         assert self.embed_dim % self.num_heads == 0, msg
         self.head_dim = self.embed_dim // self.num_heads
 
-        self.is_cross_attn = cross_attn # Record a bool flag for whether this is a cross-attention layer,
+        self.is_cross_attn = cross_attn  # Record a bool flag for whether this is a cross-attention layer,
         # which impacts how the key-value caching is updated each step i.e. if it is cross-attention, then we
         # don't update the kv cache after the first iteration i.e. the image patches need only be processed 1x
-        self.kv_cache = None # Cache key-value pairs to speed up auto-regressive rollouts
+        self.kv_cache = None  # Cache key-value pairs to speed up auto-regressive rollouts
 
     def clear_cache(self) -> None:
         """
@@ -246,7 +247,7 @@ class MultiHeadedAttention(nn.Module):
         Q = Q.reshape(N, T, self.num_heads, self.head_dim)  # Reshape to (N, T, H, E/H)
         Q = torch.permute(Q, (0, 2, 1, 3))  # Reshape to (N, H, T, E/H)
 
-        if step and self.is_cross_attn and self.kv_cache is not None: # If performing step-wise decoding and
+        if step and self.is_cross_attn and self.kv_cache is not None:  # If performing step-wise decoding and
             # the KV cache is not empty, then no need to re-compute the KV values again, they're based on the
             # image patches which have not changed since the last work token processed, extract from the cache
             # directly
@@ -270,13 +271,13 @@ class MultiHeadedAttention(nn.Module):
             V = V.reshape(N, S, self.num_heads, self.head_dim)  # Reshape to (N, S, H, E/H)
             V = torch.permute(V, (0, 2, 1, 3))  # Reshape to (N, H, S, E/H)
 
-            if step: # Extract from the cache and update the cache if needed
+            if step:  # Extract from the cache and update the cache if needed
                 if self.is_cross_attn and self.kv_cache is None:
                     # If this is a cross-attention block and the cache is empty, store the computed KV values
                     self.kv_cache = (K, V)
-                elif not self.is_cross_attn: # If this is self-attention instead, pull out what prior KV
+                elif not self.is_cross_attn:  # If this is self-attention instead, pull out what prior KV
                     # values, append the new ones, and update the KV cache after appending the new vectors
-                    if self.kv_cache is not None: # If non-empty, append the new to the existing KV vectors
+                    if self.kv_cache is not None:  # If non-empty, append the new to the existing KV vectors
                         K = torch.concat((self.kv_cache[0], K), dim=3)  # Concat along the S dimension
                         V = torch.concat((self.kv_cache[1], V), dim=2)  # Concat along the S dimension
                     self.kv_cache = (K, V)  # Update the cache after appending the new token vectors
@@ -728,7 +729,7 @@ class TransformerDecoder(nn.Module):
         """
         This method clears out the key-value cache and should be called before starting step-wise decoding.
         """
-        for layer in self.layers: # Clear the cache from each transformer layer
+        for layer in self.layers:  # Clear the cache from each transformer layer
             layer.clear_cache()
 
 
@@ -928,20 +929,20 @@ class CLIPimgEncoder(nn.Module):
         :returns: A tensor of laten image representations of size: (N, 197, 768) = CLS + 196 patches
         """
         # --- This is basically CLIP's internal visual forward ---
-        x = self.visual.conv1(images)            # (N, 768, 14, 14)
+        x = self.visual.conv1(images)  # (N, 768, 14, 14)
         x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)                    # (N, 196, 768)
+        x = x.permute(0, 2, 1)  # (N, 196, 768)
 
         cls = self.visual.class_embedding.to(x.dtype)
         cls = cls.unsqueeze(0).expand(x.shape[0], 1, -1)
-        x = torch.cat([cls, x], dim=1)            # (N, 197, 768)
+        x = torch.cat([cls, x], dim=1)  # (N, 197, 768)
 
         x = x + self.visual.positional_embedding
         x = self.visual.ln_pre(x)
 
-        x = x.permute(1, 0, 2)                    # (197, N, 768)
+        x = x.permute(1, 0, 2)  # (197, N, 768)
         x = self.visual.transformer(x)
-        x = x.permute(1, 0, 2)                    # (N, 197, 768)
+        x = x.permute(1, 0, 2)  # (N, 197, 768)
 
         x = self.visual.ln_post(x)
         return x
@@ -962,8 +963,8 @@ class CLIPtextEncoder(nn.Module):
 
         # Load CLIP ViT-B/16 pre-trained model
         self.model, _ = clip.load("ViT-B/32", device=device)
-        self.tokenizer = clip.tokenize # Text tokenizer CLIP expects
-        self.embed_dim = self.model.text_projection.shape[1] # 512
+        self.tokenizer = clip.tokenize  # Text tokenizer CLIP expects
+        self.embed_dim = self.model.text_projection.shape[1]  # 512
         self.device = device
 
         # Freeze all parameters of the CLIP encoder model
@@ -1168,7 +1169,7 @@ class LanguageDecoder(nn.Module):
         self.decoder = TransformerDecoder(decoder_layer, num_layers)
         # A final projection layer from the outputs of the decoder to the vocab space
         self.vocab_proj = nn.Linear(embed_dim, self.vocab_size)
-        # Tie together the weights of the vocab projection layer with the workd token embedding layer to
+        # Tie together the weights of the vocab projection layer with the word token embedding layer to
         # reduce the overall parameter count and mitigate potential overfitting in the language decoder
         self.vocab_proj.weight = self.word_idx_embed.weight
 
@@ -1217,13 +1218,13 @@ class LanguageDecoder(nn.Module):
 
         # 1). During training, apply word dropout to mitigate memorization of word phrases and encourage the
         # mode to attend to the image features from the vision encoder instead
-        if self.training: # Check if the model is in training mode, if so then apply the word dropout
+        if self.training:  # Check if the model is in training mode, if so then apply the word dropout
             word_idx_seq = word_dropout(word_idx_seq, 0.0, self._pad)
 
         # 2). Create a mask (tgt_mask) for masking out attention scores from early words to latter words in
         # the captions sequence i.e. prevent lookahead, i.e. required for causal self-attention
         # Lower right triangular matrix of 1s to prevent lookahead
-        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device) # (T, T) for causal masking
+        tgt_mask = torch.tril(torch.ones(T, T)).to(self.device_param.device)  # (T, T) for causal masking
         pad_mask = (word_idx_seq == self._pad)  # Where True, we have padding (N, T), with word dropout we
         # don't want to attend to padding tokens in the middle of the sequence
 
@@ -1269,15 +1270,15 @@ class LanguageDecoder(nn.Module):
         # 2). Add positional encodings to the captions embeddings
         captions_emb = self.word_pos_embed(captions_emb)  # (batch_size, max_len, embed_dim) = (N, T, E)
 
-        if img_features is not None: # Only re-compute and update if not None
+        if img_features is not None:  # Only re-compute and update if not None
             # 3). Apply a projection to the img_features before feeding them into the cross-attention layer
             # nn.Linear(patch_embed_dim, embed_dim): (batch_size, img_feat_dim) -> (batch_size, wordvec_dim)
             # then also apply layer norm before cross-attention
             img_features = self.visual_projection(img_features)  # (batch_size, num_patches, embed_dim)
             # Also add in the positional encodings again so that the decoder has the spatial info of patches
             img_features += self.img_pos_embed_decoder  # (N, num_patches + 1, embed_dim), broadcasts dim=0
-            self.img_features_cache = img_features # Cache for later re-use, no need to re-run every time
-        else: # Otherwise, rely on what's already in the cache instead of re-computing
+            self.img_features_cache = img_features  # Cache for later re-use, no need to re-run every time
+        else:  # Otherwise, rely on what's already in the cache instead of re-computing
             assert self.img_features_cache is not None, "img_features_cache is empty!"
             img_features = self.img_features_cache
 
@@ -1383,7 +1384,7 @@ class VisionLanguageModel(nn.Module):
         :returns: The sum of negative log-likelihood across all timesteps in the decoding. Log-likelihood
             values are not computed for the padding tokens.
         """
-        N, T, V = decoder_outputs.shape # Unpack shape of the inputs
+        N, T, V = decoder_outputs.shape  # Unpack shape of the inputs
 
         # Flatten the batch and sequence dims for passing the data into F.cross_entropy, make sure to align
         # the predictions with the ground truths. The first token of target_word_idx is <s> so we skip that
@@ -1393,7 +1394,7 @@ class VisionLanguageModel(nn.Module):
         targets_flat = target_word_idx[:, 1:].reshape(-1)  # (N * (T-1))
 
         # Create a mask to ignore the padding tokens
-        mask = (targets_flat != self.decoder._pad) # True = No padding token, False = Padding token
+        mask = (targets_flat != self.decoder._pad)  # True = No padding token, False = Padding token
         logits_flat = logits_flat[mask]
         targets_flat = targets_flat[mask]
 
@@ -1423,11 +1424,11 @@ class VisionLanguageModel(nn.Module):
         """
         assert temp >= 0, f"temp must be a value >= 0, got {temp}"
         max_len = self.decoder.max_len if max_len is None else max_len
-        device = imgs.device # Infer the correct device from the images passed in
+        device = imgs.device  # Infer the correct device from the images passed in
 
         was_training = self.training
-        self.train() if track_gradients else self.eval() # Switch to training mode if gradient tracking
-        self.decoder.clear_cache() # Clear out the KV and image features cache before running
+        self.train() if track_gradients else self.eval()  # Switch to training mode if gradient tracking
+        self.decoder.clear_cache()  # Clear out the KV and image features cache before running
 
         with torch.set_grad_enabled(track_gradients):
 
@@ -1450,12 +1451,12 @@ class VisionLanguageModel(nn.Module):
                 logits = logits[:, -1, :]  # Use only the last timestep's embed values to make the next
                 # word token prediction (N, vocab_size)
 
-                if temp == 0.0: # Then use the argmax for greedy decoding
+                if temp == 0.0:  # Then use the argmax for greedy decoding
                     # Choose the most likely word index from the vocabulary for each image, (N, V) -> (N, )
                     word_indices = torch.argmax(logits, axis=1)  # (N, )
-                else: # Otherwise randomly sample from the distribution of predicted next word tokens
+                else:  # Otherwise randomly sample from the distribution of predicted next word tokens
                     # Apply the temperature scaling and sample
-                    probs = F.softmax(logits / temp, dim=-1) # (N, V), apply softmax along vocab dim
+                    probs = F.softmax(logits / temp, dim=-1)  # (N, V), apply softmax along vocab dim
                     word_indices = torch.multinomial(probs, num_samples=1).squeeze(1)  # (N, )
 
                 # Update the captions output and the current partial captions tensor
@@ -1463,8 +1464,9 @@ class VisionLanguageModel(nn.Module):
                 captions[eos_mask, t] = self._pad  # Replace with the padding token beyond </s>
                 log_probs = torch.log_softmax(logits, dim=-1)  # (N, V) log probs for each next token pred
                 eos_mask = eos_mask | (captions[:, t] == self._end)  # Update the end of sentence bool flags
-                selected_logprob = log_probs.gather(1, word_indices.unsqueeze(1)).squeeze(1)   # (N,)
-                log_probs_sum += selected_logprob * (~eos_mask).float() # Add the log probs of these new token
+                selected_logprob = log_probs.gather(1, word_indices.unsqueeze(1)).squeeze(1)  # (N,)
+                log_probs_sum += selected_logprob * (
+                    ~eos_mask).float()  # Add the log probs of these new token
                 # predictions for each caption, zero out the entires that are the end or padding tokens
                 if eos_mask.sum() == len(eos_mask):  # Stop early if all outputs have reached their </s> token
                     break
@@ -1473,7 +1475,7 @@ class VisionLanguageModel(nn.Module):
                 partial_captions = torch.cat([partial_captions, word_indices], dim=1)  # (N, t) -> (N, t+1)
 
         self.train() if was_training else self.eval()
-        self.decoder.clear_cache() # Clear out the KV and image features cache ater running
+        self.decoder.clear_cache()  # Clear out the KV and image features cache ater running
 
         if return_strings is False:  # Return as a np.ndarray
             return captions, log_probs_sum  # (N, T) = (batch_size, max_size), (N, ) float values
@@ -1539,7 +1541,7 @@ class VisionLanguageModel(nn.Module):
 
             best_tokens = beams[0][0].squeeze(0).cpu().numpy()  # Already sorted by log_prob / length ** alpha
 
-        self.train() # Make sure the model is in training mode before exiting
+        self.train()  # Make sure the model is in training mode before exiting
         return decode_caption(best_tokens, self.sp_model) if return_string else best_tokens
 
     def beam_search(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,

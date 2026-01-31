@@ -11,8 +11,6 @@ import numpy as np
 import pandas as pd
 from typing import List, Union
 import matplotlib.pyplot as plt
-from pathlib import Path
-
 
 def get_device():
     """
@@ -82,7 +80,7 @@ def denormalize_patches(original_patches: torch.Tensor, pred_patches: torch.Tens
         to compute means and variances to reverse the whitening operation.
     :param pred_patches: An input batch of image patches of size (N, num_patches, patch_dim) that will be
         un-normalized using the mean and variance from original_patches.
-    :returns: pred_patches after reversing the patch-level normalization.
+    :returns: Pred_patches after reversing the patch-level normalization.
     """
     mean = original_patches.mean(dim=-1, keepdim=True)  # Compute the per patch mean pixel value
     var = original_patches.var(dim=-1, keepdim=True, unbiased=False)  # Compute the per patch pixel variance
@@ -144,7 +142,7 @@ def read_config(config_name: str, dataset_dir: str = "dataset/preprocessed") -> 
     cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
     cfg["DataLoaderTrain"]["dataset_dir"] = dataset_dir
     cfg["DataLoaderVal"]["dataset_dir"] = dataset_dir
-    device = get_device().type # Extract as a string
+    device = get_device().type  # Extract as a string
     cfg["DataLoaderTrain"]["device"] = device
     cfg["DataLoaderVal"]["device"] = device
     return cfg
@@ -161,14 +159,14 @@ def update_cache_and_plot(step: int, value: float, save_dir: str, name: str) -> 
     :param name: The name of the variable e.g. val_cider etc.
     :returns: None.
     """
-    os.makedirs(save_dir, exist_ok=True) # Make sure this save directory is available for saving
+    os.makedirs(save_dir, exist_ok=True)  # Make sure this save directory is available for saving
     file_path = os.path.join(save_dir, f"{name}.csv")
-    if os.path.exists(file_path): # Read in the prior data if it exists already
+    if os.path.exists(file_path):  # Read in the prior data if it exists already
         df = pd.read_csv(file_path, index_col=0)
-    else: # Otherwise start a new df that will be saved
+    else:  # Otherwise start a new df that will be saved
         df = pd.DataFrame(dtype=float)
-    df.loc[step, name] = value # Record the new value that was observed at time=step in df
-    df.to_csv(file_path, index=True) # Create a new file or update the existing CSV
+    df.loc[step, name] = value  # Record the new value that was observed at time=step in df
+    df.to_csv(file_path, index=True)  # Create a new file or update the existing CSV
 
     # Create a plot and save it to the same directory as well
     fig, ax = plt.subplots(1, 1, figsize=(8, 3))

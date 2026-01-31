@@ -96,8 +96,8 @@ def clean_caption(caption: str) -> str:
     :param caption: A string caption for an image.
     :return: A cleaned version of the caption string.
     """
-    caption = caption.lower().strip().rstrip("!?.") # Lower case, remove excess white space, remove end punct
-    if len(caption) > 0 and caption[-1] not in ".?!": # Add a period to the end for consistent punctuation
+    caption = caption.lower().strip().rstrip("!?.")  # Lower case, remove excess white space, remove end punct
+    if len(caption) > 0 and caption[-1] not in ".?!":  # Add a period to the end for consistent punctuation
         caption += "."
     return caption
 
@@ -178,6 +178,7 @@ def tokenize_captions(captions_path: str, vocab_model_path: str, output_path: st
     os.makedirs(os.path.dirname(output_path), exist_ok=True)  # Make this directory if it doesn't yet exist
     torch.save(output_dict, output_path)
 
+
 def save_gts_dict(captions_path: str, output_path: str) -> None:
     """
     Extracts the captions from a given captions file and saves them to disk after cleaning them for CIDEr
@@ -242,21 +243,21 @@ class CocoCaptionDataset(Dataset):
         :param transform: A composition of torch vision transforms to apply to each image before being added
             to a batch.
         """
-        self.image_dir = os.path.join(dataset_dir, "images") # The directory containing all the images
+        self.image_dir = os.path.join(dataset_dir, "images")  # The directory containing all the images
         self.image_ids = []
-        for s in split.split(): # Separate on white space, read in all the image IDs for the splits defined
+        for s in split.split():  # Separate on white space, read in all the image IDs for the splits defined
             self.image_ids.extend(pd.read_csv(os.path.join(dataset_dir, f"image_ids/{s}.csv"),
                                               header=None).iloc[:, 0].astype(int).tolist())
 
         self.caption_dir = os.path.join(dataset_dir, "captions")
         self.captions = None
         if load_captions:
-            for s in split.split(): # Separate on white space, read in all captions for each split
+            for s in split.split():  # Separate on white space, read in all captions for each split
                 captions_path = os.path.join(self.caption_dir, f"{s}_captions.pt")
                 captions = torch.load(captions_path, map_location="cpu", weights_only=False)
                 if self.captions is None:
                     self.captions = captions
-                else: # Combine together the captions loaded from each split
+                else:  # Combine together the captions loaded from each split
                     self.captions = self.captions_1 | captions
             assert self.captions.keys() == set(self.image_ids), "caption ids and image ids don't match"
 
@@ -362,11 +363,11 @@ if __name__ == "__main__":
     # 1). Pre-process the training, validation, and test images, down-size and pad to [224 x 224 x 3]
     for split in ["train", "val", "test"]:
         original_img_dir = os.path.join(dataset_dir, f"coco_original/images/{split}2017")
-        output_image_dir = os.path.join(dataset_dir, "preprocessed/images/") # Save all into 1 folder
+        output_image_dir = os.path.join(dataset_dir, "preprocessed/images/")  # Save all into 1 folder
         preprocess_images(original_img_dir, output_image_dir, img_size)
         image_ids = [x.replace(".jpg", "") for x in os.listdir(original_img_dir) if x.endswith(".jpg")]
         pd.DataFrame(image_ids).to_csv(os.path.join(dataset_dir, f"preprocessed/image_ids/{split}.csv"),
-                                                    index=False, header=None)
+                                       index=False, header=None)
 
     # 2). Using all the training set captions, create a sub-word tokenizer
     train_captions_path = os.path.join(dataset_dir, "coco_original/annotations/captions_train2017.json")

@@ -113,16 +113,12 @@ class TrainerMAE:
         if not self.logger.handlers:  # Prevent duplicate handlers
             file_handler = logging.FileHandler(os.path.join(self.results_folder, "pretrain_mae.log"),
                                                encoding="utf-8")
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # file_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(file_handler)
 
             tqdm_handler = TqdmLoggingHandler()
-            tqdm_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            tqdm_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
         self.logger.propagate = False
@@ -227,7 +223,7 @@ class TrainerMAE:
         """
         self.logger.info(f"Reporting learning rates and weight decay at step={self.step}")
         labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
-        for i, group in enumerate(self.opt.param_groups): # Report all learning rates
+        for i, group in enumerate(self.opt.param_groups):  # Report all learning rates
             self.logger.info((f"{(labels[i] + ':').ljust(17)} lr = {group['lr']:.2e}, wd = "
                               f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
 
@@ -345,7 +341,7 @@ class TrainerMAE:
                     img_patches_masked = torch.where(mask.unsqueeze(-1) == 0, img_patches, 0)
                     # The decoder is trained to predict the whitened pixel values, reverse the normalization
                     pred_imgs = denormalize_patches(img_patches, pred_imgs.detach())
-                    # Fill the unmasked image patchs with the actual image patch data to blend with the true
+                    # Fill the unmasked image patches with the actual image patch data to blend with the true
                     pred_imgs_filled = torch.where(mask.unsqueeze(-1) == 0, img_patches, pred_imgs)
                     # Combine all the image tensors into 1 big tensor so that they can be saved to disk
                     # Original + Original Masked + Pred + Pred Blended with Original
@@ -368,6 +364,7 @@ class TrainerMAE:
 
                 pbar.update(1)
 
+
 #######################################
 ### CLIP-Style Pre-Training Trainer ###
 #######################################
@@ -386,7 +383,7 @@ class TrainerCLIP:
         objective. This step of pre-training generally follows MAE pre-training and trains a
         vision-transformer (ViT) (ImageEncoder) to associate images with textual descriptions, which teaches
         the image encoder to learn semantic image understanding by maximizing the cosine similarity of images
-        and their captions in a shared latent space, while minimzing the cosine similarity of off-diagonal
+        and their captions in a shared latent space, while minimizing the cosine similarity of off-diagonal
         (image, caption) pairs.
 
         This class wrapper has methods for loading a model from a recent checkpoint, saving a model
@@ -431,23 +428,19 @@ class TrainerCLIP:
         if not self.logger.handlers:  # Prevent duplicate handlers
             file_handler = logging.FileHandler(os.path.join(self.results_folder, "pretrain_clip.log"),
                                                encoding="utf-8")
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # file_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(file_handler)
 
             tqdm_handler = TqdmLoggingHandler()
-            tqdm_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            tqdm_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
         self.logger.propagate = False
 
         # 3). Record input parameters
-        self.img_encoder = img_encoder # The vision-transformer encoder model
-        self.text_encoder = text_encoder # Pre-trained, frozen text-encoder model from CLIP
+        self.img_encoder = img_encoder  # The vision-transformer encoder model
+        self.text_encoder = text_encoder  # Pre-trained, frozen text-encoder model from CLIP
         self.sp_model = sp_model
 
         self.device = get_device()  # Auto-detect what device to use for training
@@ -464,8 +457,10 @@ class TrainerCLIP:
         self.dataloader_val = dataloader_val
 
         # 4). Configure the optimizer for training - segment the image and text encoders
-        self.logger.info(f"Image Encoder model parameters: {sum(p.numel() for p in img_encoder.parameters())}")
-        self.logger.info(f"Text Encoder model parameters: {sum(p.numel() for p in text_encoder.parameters())}")
+        self.logger.info(
+            f"Image Encoder model parameters: {sum(p.numel() for p in img_encoder.parameters())}")
+        self.logger.info(
+            f"Text Encoder model parameters: {sum(p.numel() for p in text_encoder.parameters())}")
 
         # Add a linear mapping between the image encoder embed_dim and the text encoder embed_dim
         self.vision_proj = nn.Linear(img_encoder.embed_dim, text_encoder.embed_dim)
@@ -503,7 +498,7 @@ class TrainerCLIP:
             if len(checkpoints) > 0:  # If there is a milestone saved, load in the weights
                 last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
                 # Load in the most recent milestone to continue training
-                weights_only = (use_latest_checkpoint == 2) # Load in only the weights if set to 2
+                weights_only = (use_latest_checkpoint == 2)  # Load in only the weights if set to 2
                 self.load(last_checkpoint, weights_only)
             else:  # Otherwise, check if there are any MAE pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
@@ -582,7 +577,7 @@ class TrainerCLIP:
         """
         self.logger.info(f"Reporting learning rates and weight decay at step={self.step}")
         labels = ["Encoder Decay", "Encoder No Decay", "Vision Proj Decay", "Vision Proj No Decay"]
-        for i, group in enumerate(self.opt.param_groups): # Report all learning rates
+        for i, group in enumerate(self.opt.param_groups):  # Report all learning rates
             self.logger.info((f"{(labels[i] + ':').ljust(21)} lr = {group['lr']:.2e}, wd = "
                               f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
 
@@ -621,20 +616,19 @@ class TrainerCLIP:
                 # Apply the CLIP tokenizer to tokenize the captions in the way expected by the text_encoder
                 tokens = self.text_encoder.tokenizer(captions_str).to(self.device, non_blocking=True)
 
-
                 # Zero the grads of the opt before computing the loss
                 self.opt.zero_grad(set_to_none=True)
 
                 # Compute the forward pass through the image and text encoders
                 if self.amp_dtype is not None:
                     with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                        img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :]) # CLS token only
-                        txt_emb = self.text_encoder(tokens) # Normalization takes place within the loss func
-                        loss = clip_loss(img_emb, txt_emb) # Compute the CLIP cosine loss
+                        img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token only
+                        txt_emb = self.text_encoder(tokens)  # Normalization takes place within the loss func
+                        loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
                 else:
-                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :]) # CLS token only
-                    txt_emb = self.text_encoder(tokens) # Normalization takes place within the loss func
-                    loss = clip_loss(img_emb, txt_emb) # Compute the CLIP cosine loss
+                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token only
+                    txt_emb = self.text_encoder(tokens)  # Normalization takes place within the loss func
+                    loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
 
                 if self.amp_dtype == torch.float16:
                     scaler.scale(loss).backward()
@@ -682,7 +676,7 @@ class TrainerCLIP:
                     for m in [self.img_encoder, self.vision_proj]:
                         m.eval()
 
-                    with torch.no_grad(): # No gradient tracking needed during evaluation
+                    with torch.no_grad():  # No gradient tracking needed during evaluation
                         eval_losses, eval_n = 0.0, 0
                         for batch in self.dataloader_train:
                             imgs = batch["images"].to(self.device, non_blocking=True)  # (N, C, H, W)
@@ -694,16 +688,16 @@ class TrainerCLIP:
                             # Compute the forward pass through the image and text encoders
                             if self.amp_dtype is not None:
                                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :]) # CLS token
+                                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token
                                     txt_emb = self.text_encoder(tokens)
-                                    loss = clip_loss(img_emb, txt_emb) # Compute the CLIP cosine loss
+                                    loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
                             else:
-                                img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :]) # CLS token
+                                img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token
                                 txt_emb = self.text_encoder(tokens)
-                                loss = clip_loss(img_emb, txt_emb) # Compute the CLIP cosine loss
+                                loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
 
-                            eval_losses += loss.item() # Sum the losses over the validation set
-                            eval_n += 1 # Count up how batches were used
+                            eval_losses += loss.item()  # Sum the losses over the validation set
+                            eval_n += 1  # Count up how batches were used
 
                     eval_loss = eval_losses / eval_n
                     self.logger.info(f"Validation set loss={eval_loss:.4f}")
@@ -787,16 +781,12 @@ class TrainerCaptioning:
             log_file = "train.log" if scst is False else "scst_train.log"
             file_handler = logging.FileHandler(os.path.join(self.results_folder, log_file),
                                                encoding="utf-8")
-            file_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # file_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(file_handler)
 
             tqdm_handler = TqdmLoggingHandler()
-            tqdm_handler.setFormatter(
-                logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-            )
+            tqdm_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
             # tqdm_handler.stream = sys.stdout  # Ensure UTF-8 capable stream
             self.logger.addHandler(tqdm_handler)
         self.logger.propagate = False
@@ -816,7 +806,7 @@ class TrainerCaptioning:
         self.frozen_enc_pct = frozen_enc_pct  # The number of steps for which the encoder will be frozen
         self.freeze_steps = int(train_num_steps * frozen_enc_pct)  # Freeze the encoder at first
         # since it will be pre-trained on the MAE objective and should generally be in a good spot
-        self.scst = scst # Record whether this is SCST fine-tuning or not
+        self.scst = scst  # Record whether this is SCST fine-tuning or not
 
         # Save a pointer to the train and validation dataloaders
         self.dataloader_train = dataloader_train
@@ -830,18 +820,26 @@ class TrainerCaptioning:
         self.encoder_params = list(self.vlm.encoder.parameters())
         self.decoder_params = list(self.vlm.decoder.parameters())
 
-        self.logger.info(f"Encoder model parameters: {sum(p.numel() for p in self.encoder_params)}")
-        self.logger.info(f"Decoder model parameters: {sum(p.numel() for p in self.decoder_params)}")
-        self.logger.info(f"Total model parameters: {sum(p.numel() for p in vlm.parameters())}")
+        params = sum(p.numel() for p in self.encoder_params)
+        trainable_params = sum(p.numel() for p in self.encoder_params if p.requires_grad)
+        self.logger.info(f"Encoder model parameters: {params}, {trainable_params} (trainable)")
+
+        params = sum(p.numel() for p in self.decoder_params)
+        trainable_params = sum(p.numel() for p in self.decoder_params if p.requires_grad)
+        self.logger.info(f"Decoder model parameters: {params}, {trainable_params} (trainable)")
+
+        params = sum(p.numel() for p in vlm.parameters())
+        trainable_params = sum(p.numel() for p in vlm.parameters() if p.requires_grad)
+        self.logger.info(f"Total model parameters: {params}, {trainable_params} (trainable)")
 
         # Configure the optimizer, use 1/8 the learning rate for all encoder parameters and different weight
         # decays for the encoder vs decoder parameters
         dec_groups = get_param_groups(self.vlm.decoder, wd_decoder, lr_start)
-        if isinstance(vlm.encoder, ImageEncoder): # If the encoder is the trainable ImageEncoder then add
+        if isinstance(vlm.encoder, ImageEncoder):  # If the encoder is the trainable ImageEncoder then add
             # its parameters to the optimizer for gradient updates during training
             enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.125)
             self.opt = AdamW(enc_groups + dec_groups, betas=adam_betas)
-        else: # Otherwise the encoder will be the frozen CLIP model, don't add its params to the optimizer
+        else:  # Otherwise the encoder will be the frozen CLIP model, don't add its params to the optimizer
             # since we will not want it being updated at all during training
             self.opt = AdamW(dec_groups, betas=adam_betas)
 
@@ -863,13 +861,13 @@ class TrainerCaptioning:
             if len(checkpoints) > 0:  # If there is a milestone saved, load in the weights
                 last_checkpoint = max([int(x.replace("model-", "").replace(".pt", "")) for x in checkpoints])
                 # Load in the most recent milestone to continue training
-                weights_only = (use_latest_checkpoint == 2) # Load in only the weights if set to 2
+                weights_only = (use_latest_checkpoint == 2)  # Load in only the weights if set to 2
                 self.load(last_checkpoint, weights_only)
             else:  # Otherwise, check if there are any pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
-                if scst is False: # If doing stage 2 supervised training, look to the MAE pre-training dir
+                if scst is False:  # If doing stage 2 supervised training, look to the MAE pre-training dir
                     pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain_clip/checkpoints")
-                else: # Otherwise if doing stage 2 SCST training, look to the captioning dir
+                else:  # Otherwise if doing stage 2 SCST training, look to the captioning dir
                     pretrained_wts_dir = os.path.join(self.results_folder, "../captioning/checkpoints")
                 if os.path.exists(pretrained_wts_dir):
                     milestones = [int(x.replace("model-", "").replace(".pt", ""))
@@ -912,7 +910,7 @@ class TrainerCaptioning:
         # Re-instate the training step counter, model weights, and optimizer state from the checkpoint data
         # read in from disk
         self.vlm.load_state_dict(checkpoint_data["model"])
-        if not weights_only: # Load in more than just the weights
+        if not weights_only:  # Load in more than just the weights
             self.step = checkpoint_data["step"]
             self.opt.load_state_dict(checkpoint_data["opt"])
             self.scheduler.load_state_dict(checkpoint_data["scheduler"])
@@ -938,15 +936,16 @@ class TrainerCaptioning:
         :param milestone: An integer denoting the training timestep at which the model weights were saved.
         :returns: None. Weights are loaded into the model from disk.
         """
-        if self.scst is False: # Stage 2 supervised training with a cross-entropy loss
-            if isinstance(self.vlm.encoder, ImageEncoder): # Only if the encoder is the trainable ImageEncoder
+        if self.scst is False:  # Stage 2 supervised training with a cross-entropy loss
+            if isinstance(self.vlm.encoder,
+                          ImageEncoder):  # Only if the encoder is the trainable ImageEncoder
                 file_path = f"../pretrain_clip/checkpoints/model-{milestone}.pt"
                 checkpoint_path = os.path.join(self.results_folder, file_path)
                 self.logger.info(f"Loading pretrained encoder model weights from {checkpoint_path}.")
                 checkpoint_data = torch.load(checkpoint_path, map_location=self.device)
                 # Re-instate the model weights from the checkpoint data read in from disk
                 self.vlm.encoder.load_state_dict(checkpoint_data["img_encoder"])
-        else: # Stage 3 SCST fine-tuning, load the pre-trained model from the captioning folder
+        else:  # Stage 3 SCST fine-tuning, load the pre-trained model from the captioning folder
             file_path = f"../captioning/checkpoints/model-{milestone}.pt"
             checkpoint_path = os.path.join(self.results_folder, file_path)
             self.logger.info(f"Loading pretrained VLM model weights from {checkpoint_path}.")
@@ -1018,7 +1017,7 @@ class TrainerCaptioning:
         """
         self.logger.info(f"Reporting learning rates and weight decay at step={self.step}")
         labels = ["Encoder Decay", "Encoder No Decay", "Decoder Decay", "Decoder No Decay"]
-        for i, group in enumerate(self.opt.param_groups): # Report all learning rates
+        for i, group in enumerate(self.opt.param_groups):  # Report all learning rates
             self.logger.info((f"{(labels[i] + ':').ljust(17)} lr = {group['lr']:.2e}, wd = "
                               f"{group['weight_decay']:.2e}, count = {len(group['params'])}"))
 
@@ -1229,8 +1228,8 @@ class TrainerCaptioning:
                 if self.amp_dtype is not None:
                     with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
                         sampled_captions, logprobs_sum = self.vlm.sample(images, max_len=50,
-                                                                             return_strings=True,
-                                                                             track_gradients=True, temp=0.0)
+                                                                         return_strings=True,
+                                                                         track_gradients=True, temp=0.0)
                 else:
                     sampled_captions, logprobs_sum = self.vlm.sample(images, max_len=50, return_strings=True,
                                                                      track_gradients=True, temp=0.0)
@@ -1249,14 +1248,14 @@ class TrainerCaptioning:
                 advantages = sampled_rewards - greedy_rewards  # Size N = batch_size
                 # Normalize the advantages to reduce variance
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                advantages = np.clip(advantages, -2.0, 2.0) # Add extreme value clipping
+                advantages = np.clip(advantages, -2.0, 2.0)  # Add extreme value clipping
                 advantages = torch.tensor(advantages, device=logprobs_sum.device)  # Move to torch tensor
 
                 # 4). Compute the SCST loss = (-1) * mean( advantage * log_prob )
                 loss = (-1) * (advantages * logprobs_sum).mean()
 
                 # 5). Compute a small cross-entropy loss as well for stability (a hybrid loss)
-                if lambda_xe > 0: # If zero, then no weight so skip computing
+                if lambda_xe > 0:  # If zero, then no weight so skip computing
                     if self.amp_dtype is not None:
                         with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
                             outputs = self.vlm(images, captions)  # (N, T, V)
@@ -1267,20 +1266,24 @@ class TrainerCaptioning:
 
                     # Combine the SCST loss with the cross-entropy loss, anneal towards 0 during training
                     loss = loss + (lambda_xe * 1 - (self.step + 1) / self.train_num_steps) * xe_loss
-                    del outputs, xe_loss # Free up memory when finished
+                    del outputs, xe_loss  # Free up memory when finished
 
-                if self.amp_dtype == torch.float16:
-                    scaler.scale(loss).backward()
-                    if self.grad_clip is not None:
-                        scaler.unscale_(self.opt)  # Unscale before clipping
-                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
-                    scaler.step(self.opt)  # Update the model parameters by taking a gradient step
-                    scaler.update()
-                else:
-                    loss.backward()
-                    if self.grad_clip is not None:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                if abs(loss.item()) > 1e-3: # Trigger early stopping if the loss is too small
+                    if self.amp_dtype == torch.float16:
+                        scaler.scale(loss).backward()
+                        if self.grad_clip is not None:
+                            scaler.unscale_(self.opt)  # Unscale before clipping
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
+                        scaler.step(self.opt)  # Update the model parameters by taking a gradient step
+                        scaler.update()
+                    else:
+                        loss.backward()
+                        if self.grad_clip is not None:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.vlm.parameters(), self.grad_clip)
                     self.opt.step()  # Update the model parameters by taking a gradient step
+                    early_stop = False
+                else:
+                    early_stop = True
 
                 pbar.set_postfix(loss=f"{loss.item():.4f}", grad=f"{grad_norm:.3f}",
                                  mean_greedy_CIDEr=f"{greedy_rewards.mean():.3f}",
@@ -1292,7 +1295,7 @@ class TrainerCaptioning:
                 self.step += 1
 
                 # Periodically save the model weights to disk
-                if self.step % self.save_every == 0 or self.step == self.train_num_steps:
+                if self.step % self.save_every == 0 or self.step == self.train_num_steps or early_stop:
                     self.save(self.step)
                     plot_and_save_loss(self.losses_folder)  # Generate a new plot of the training losses
                     self.all_losses = []  # Clear the list of losses after each save, store only the ones
@@ -1300,13 +1303,13 @@ class TrainerCaptioning:
                     torch.cuda.empty_cache()
 
                 # Periodically compute performance metrics on the eval dataset
-                if self.step % self.eval_every == 0 or self.step == self.train_num_steps:
+                if self.step % self.eval_every == 0 or self.step == self.train_num_steps or early_stop:
                     val_loss, val_ppl, val_cider = self.compute_eval_scores(max_len)
                     msg = f"Validation Set NLL: {val_loss:.3f} PPL: {val_ppl:.3f} CIDEr: {val_cider:.3f}"
                     self.logger.info(msg)
 
                 # Periodically generate samples from the model
-                if self.step % self.sample_every == 0 or self.step == self.train_num_steps:
+                if self.step % self.sample_every == 0 or self.step == self.train_num_steps or early_stop:
                     # Periodically log the loss and other training metrics
                     self.logger.info((f"loss={loss.item():.4f}, grad={grad_norm:.3f}, "
                                       f"mean_greedy_cider={greedy_rewards.mean():.3f}"))
@@ -1342,6 +1345,9 @@ class TrainerCaptioning:
                     for p in self.encoder_params:
                         p.requires_grad = True
                     self.logger.info(f"Image encoder parameters unfrozen at step={self.step}")
+
+                if early_stop: # Trigger early stopping, end the training loop
+                    return None
 
                 del batch, captions_gt, images, captions, greedy_captions, logprobs_g, sampled_captions
                 del logprobs_sum, greedy_rewards, sampled_rewards, advantages, loss

@@ -1,4 +1,4 @@
-# This config contains debug settings for prod training
+# This config contains settings for prod training
 dataset_dir: "dataset/preprocessed/"
 use_clip_encoder: False
 

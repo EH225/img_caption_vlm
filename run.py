@@ -64,8 +64,8 @@ def pre_train_clip(config: dict) -> None:
     sp_model.load(os.path.join(config["dataset_dir"], "vocab.model"))
 
     # 2).Init the image encoder and text encoder model for training
-    img_encoder = ImageEncoder(**config.get("ImageEncoder", {})) # Init the trainable image encoder
-    text_encoder = CLIPtextEncoder(get_device()) # Load the pre-trained, frozen CLIP text encoder.
+    img_encoder = ImageEncoder(**config.get("ImageEncoder", {}))  # Init the trainable image encoder
+    text_encoder = CLIPtextEncoder(get_device())  # Load the pre-trained, frozen CLIP text encoder.
 
     # 3). Construct the COCO training dataset loader and validation dataset loader
     dataloader_train = get_dataloader(split='train', include_captions=True,
@@ -75,7 +75,7 @@ def pre_train_clip(config: dict) -> None:
 
     # 4). Configure the training pipeline with the TrainerCLIP object
     trainer = TrainerCLIP(img_encoder, text_encoder, sp_model, dataloader_train, dataloader_val,
-                         **config.get("TrainerCLIP", {}))
+                          **config.get("TrainerCLIP", {}))
 
     # 5). Train the model to completion on the CLIP pre-training task
     trainer.train()
@@ -176,9 +176,9 @@ if __name__ == "__main__":
         if os.path.exists(debug_results_dir):  # Check if the output results directory exists
             shutil.rmtree(debug_results_dir)  # Remove entire results directory
 
-    if not config.get("use_clip_encoder", False): # Run pre-training on the image encoder if not using the
+    if not config.get("use_clip_encoder", False):  # Run pre-training on the image encoder if not using the
         # pre-trained, frozen CLIP image encoder
         pre_train_mae(config)  # Run MAE pre-training to train the image encoder
-        pre_train_clip(config) # Run CLIP-style image-language pre-training to train the image encoder
+        pre_train_clip(config)  # Run CLIP-style image-language pre-training to train the image encoder
     train_captioning_model(config)  # Run supervised teacher-forcing training to train a caption decoder
-    train_scst(config) # Run SCST fine-tuning on the VLM to optimize CIDEr score
+    train_scst(config)  # Run SCST fine-tuning on the VLM to optimize CIDEr score
