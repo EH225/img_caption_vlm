@@ -63,7 +63,6 @@ def clip_loss(image_emb: torch.Tensor, text_emb: torch.Tensor, temperature: floa
 ################################
 # TODO: Section marker
 
-
 class TrainerMAE:
     def __init__(self, encoder: ImageEncoder, decoder: MAEdecoder, dataloader_train: DataLoader,
                  dataloader_val: DataLoader, lr_start: float = 1e-4, lr_end: float = 1e-6,
@@ -703,9 +702,9 @@ class TrainerCLIP:
                                 loss = clip_loss(img_emb, txt_emb) # Compute the CLIP cosine loss
 
                             eval_losses += loss.item() # Sum the losses over the validation set
-                            eval_n += imgs.shape[0] # Count up how many samples were computed
+                            eval_n += 1 # Count up how batches were used
 
-                    eval_loss = eval_losses/eval_n
+                    eval_loss = eval_losses / eval_n
                     self.logger.info(f"Validation set loss={eval_loss:.4f}")
                     update_cache_and_plot(self.step, eval_loss, self.results_folder, "eval_loss")
 
@@ -722,7 +721,6 @@ class TrainerCLIP:
 ### Image Captioning Trainer ###
 ################################
 # TODO: Section marker
-
 
 class TrainerCaptioning:
     def __init__(self, vlm: VisionLanguageModel, dataloader_train: DataLoader,
