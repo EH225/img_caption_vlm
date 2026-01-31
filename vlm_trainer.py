@@ -837,10 +837,12 @@ class TrainerCaptioning:
         # Configure the optimizer, use 1/8 the learning rate for all encoder parameters and different weight
         # decays for the encoder vs decoder parameters
         dec_groups = get_param_groups(self.vlm.decoder, wd_decoder, lr_start)
-        if isinstance(vlm.encoder, ImageEncoder): # If the encoder is the trainable ImageEncoder
+        if isinstance(vlm.encoder, ImageEncoder): # If the encoder is the trainable ImageEncoder then add
+            # its parameters to the optimizer for gradient updates during training
             enc_groups = get_param_groups(self.vlm.encoder, wd_encoder, lr_start * 0.125)
             self.opt = AdamW(enc_groups + dec_groups, betas=adam_betas)
         else: # Otherwise the encoder will be the frozen CLIP model, don't add its params to the optimizer
+            # since we will not want it being updated at all during training
             self.opt = AdamW(dec_groups, betas=adam_betas)
 
         # 5). Configure a learning rate scheduler for training with warm-up and cosine annealing
@@ -1321,7 +1323,11 @@ class TrainerCaptioning:
                     images = batch["images"][indices].to(self.device)
                     captions = batch["captions"][indices].to(self.device)
                     image_names = [batch["image_names"][int(idx)] for idx in indices]
-                    pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)  # (N, T)
+                    if self.amp_dtype is not None:
+                        with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                            pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
+                    else:
+                        pred_captions, _ = self.vlm.sample(images, max_len, True, False, 0.0)
                     actual_captions = [decode_caption(x, self.vlm.sp_model) for x in captions]
                     # Print some side-by-side comparisons of the predicted vs actual captions
                     for yhat, y, img_name in zip(pred_captions, actual_captions, image_names):
