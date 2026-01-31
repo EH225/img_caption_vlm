@@ -133,7 +133,12 @@ def train_scst(config: Dict) -> None:
     sp_model.load(os.path.join(config["dataset_dir"], "vocab.model"))
 
     # 2).Init the encoder and decoder model for training and use them to create a vision-language model
-    vlm = VisionLanguageModel(encoder=ImageEncoder(**config.get("ImageEncoder", {})),
+    if config.get("use_clip_encoder", True):
+        print("Using the CLIP encoder")
+        encoder = CLIPimgEncoder(device=get_device())
+    else:
+        encoder = ImageEncoder(**config.get("ImageEncoder", {}))
+    vlm = VisionLanguageModel(encoder=encoder,
                               decoder=LanguageDecoder(sp_model=sp_model, **config.get("LanguageDecoder", {})))
 
     # 3). Construct the COCO training dataset loader and validation dataset loader + read in caption dicts
