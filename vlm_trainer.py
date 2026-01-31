@@ -621,6 +621,7 @@ class TrainerCLIP:
                 # Apply the CLIP tokenizer to tokenize the captions in the way expected by the text_encoder
                 tokens = self.text_encoder.tokenizer(captions_str).to(self.device, non_blocking=True)
 
+
                 # Zero the grads of the opt before computing the loss
                 self.opt.zero_grad(set_to_none=True)
 
@@ -865,7 +866,7 @@ class TrainerCaptioning:
             else:  # Otherwise, check if there are any pre-trained weights to use as a starting point
                 max_milestone = None  # Look for checkpoints in the pre-trained weights folder instead
                 if scst is False: # If doing stage 2 supervised training, look to the MAE pre-training dir
-                    pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain/checkpoints")
+                    pretrained_wts_dir = os.path.join(self.results_folder, "../pretrain_clip/checkpoints")
                 else: # Otherwise if doing stage 2 SCST training, look to the captioning dir
                     pretrained_wts_dir = os.path.join(self.results_folder, "../captioning/checkpoints")
                 if os.path.exists(pretrained_wts_dir):
