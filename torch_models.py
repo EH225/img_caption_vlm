@@ -1419,7 +1419,7 @@ class VisionLanguageModel(nn.Module):
         :param temp: A temperature parameter used to sample from the predicted distribution of probabilities
             of the next token at each timestep. Set to 0 for greedy decoding, set higher for more uniform
             sampling i.e. more creative and varied responses.
-        :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
+        :returns: A torch.Tensor of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
         assert temp >= 0, f"temp must be a value >= 0, got {temp}"
@@ -1431,7 +1431,6 @@ class VisionLanguageModel(nn.Module):
         self.decoder.clear_cache()  # Clear out the KV and image features cache before running
 
         with torch.set_grad_enabled(track_gradients):
-
             N = imgs.shape[0]  # The number of images in the batch
             img_features = self.encoder(imgs)  # Process the images and generate image features (N, S, E)
 
@@ -1483,7 +1482,7 @@ class VisionLanguageModel(nn.Module):
             return [decode_caption(x, self.sp_model) for x in captions], log_probs_sum
 
     def _beam_search(self, img: torch.Tensor, max_len: int = None, return_string: bool = True,
-                     beam_size: int = 5, alpha: float = 0.7) -> Union[np.ndarray, List[str]]:
+                     beam_size: int = 5, alpha: float = 0.7) -> Union[torch.Tensor, List[str]]:
         """
         Given a single input image of size (1, C, H, W), this method uses beam search to predict the image
         caption and outputs a np.ndarray of vocab word indices for the image or a single string that is the
@@ -1496,56 +1495,70 @@ class VisionLanguageModel(nn.Module):
             list of length N containing strings for each caption.
         :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
         :param alpha: A length normalization parameter that penalizes very short caption decodings.
-        :returns: A np.ndarray of size (1, T) containing the integer word indices of the predicted caption
+        :returns: A torch.Tensor of size (1, T) containing the integer word indices of the predicted caption
             or a caption sentence as a string.
         """
         assert img.shape[0] == 1, "Beam search expects batch size = 1"
+        device = img.device # Infer what device to use from the images
 
         max_len = self.max_len if max_len is None else max_len
         self.eval()  # Switch to eval mode to turn off dropout
 
         with torch.no_grad():  # Used for inference, no gradient tracking required
+            # Process the image 1x since it is the same for all beams during this rollout
             img_features = self.encoder(img)  # (1, S, E)
+            img_features = img_features.expand(beam_size, -1, -1) # (beam_size, S, E)
 
-            # Each beam contains: (token_ids, log_prob, finished_flag)
-            beams = [(torch.tensor([[self._start]], device=self.device_param.device), 0.0, False)]
+            # Record the output tokens ids in a tensr of size (beam_size, 1)
+            tokens = torch.full((beam_size, 1), self._start, dtype=torch.long, device=device)
+            scores = torch.zeros(beam_size, device=device) # Record the sum of log probs (B, )
+            finished = torch.zeros(beam_size, dtype=torch.bool, device=device) # Track which finished (B, )
 
-            for i in range(max_len):
-                new_beams = []
+            for t in range(max_len):
+                logits = self.decoder(img_features, tokens) # (B, T, V) compute next token logits
+                logits = logits[:, -1, :] # (B, V) use only the last timestep for the next token prediction
+                log_probs = torch.log_softmax(logits, dim=-1)  # Compute the log probs of each prediction
 
-                for tokens, log_prob, finished in beams:  # Extend the existing beams by 1 more token
-                    if finished:  # Nothing further to add if this beam has finished
-                        new_beams.append((tokens, log_prob, True))
-                        continue
+                # To prevent further expansion of the finished beams, record -inf in all the next-token logits
+                # for all tokens and then record 0.0 in the next-token logit for the end token </s> so that it
+                # is always selected. logit=-inf corresponds to prob=0 and logit=0.0 corresponds to prob=1.0
+                # so this will make these finished hypotheses always seem the most probable and we will select
+                # them in the next step below. Once finished, we will append </s> end tokens over and over
+                log_probs[finished, :] = -1e9 # logit=-inf corresponds to prob=0
+                log_probs[finished, self._pad] = 0.0 # logit=0.0 corresponds to prob=1
 
-                    logits = self.decoder(img_features, tokens)  # Run the decoder to predict the next token
-                    logits = logits[:, -1, :]  # Get the predicted logits over the vocab (1, V)
-                    log_probs = torch.log_softmax(logits, dim=-1)  # Softmax over the logits
+                # Expand the beams, take each existing beam (B of them) and consider all possible 1 token
+                # expansions to increase their seq length by 1 for this step
+                total_scores = scores[:, None] + log_probs # (B, 1) + (B, V) = (B, V), B = number of beams
+                flat_scores = total_scores.view(-1) # (B * V) flatten into a 1d vector of possible candidate
+                # log prob scores for each hypothesis
 
-                    topk_log_probs, topk_ids = torch.topk(log_probs, beam_size, dim=-1)
+                # Extract out the most promising beams, select only beam_size to continue to the next step
+                topk_scores, topk_ids = torch.topk(flat_scores, beam_size, dim=0) # Sort by sum of log prob
+                beam_ids = topk_ids // log_probs.size(1) # Figure out which of the existing B beams the top
+                # B hypotheses are an extension of
+                token_ids = topk_ids % log_probs.size(1) # Figure out which next character is best to extend
+                # the existing hypothesis with
 
-                    for k in range(beam_size):
-                        next_token = topk_ids[0, k].view(1, 1)
-                        next_log_prob = log_prob + topk_log_probs[0, k].item()
+                # Update the tokens of the final beams with the tokens selected in this step
+                tokens = torch.cat([tokens[beam_ids], token_ids[:, None]], dim=1) # (B, T + 1)
+                scores = topk_scores # Update the sum of log probs for the beams currently recorded
+                finished = finished[beam_ids] | (token_ids == self._end) # Track which have finished
 
-                        new_tokens = torch.cat([tokens, next_token], dim=1)  # Append new predicted token
-                        finished_flag = (next_token.item() == self._end)  # Check if </s> predicted
-
-                        new_beams.append((new_tokens, next_log_prob, finished_flag))
-
-                # Keep the top-k beams sorted by sum(log_prob) / (length)^alpha
-                beams = sorted(new_beams, key=lambda x: x[1] / (len(x[0]) ** alpha), reverse=True)[:beam_size]
-
-                if all(finished for _, _, finished in beams):  # Terminate early if all beams finished
+                if finished.all(): # If all beams have finished before max_len reached, stop early
                     break
 
-            best_tokens = beams[0][0].squeeze(0).cpu().numpy()  # Already sorted by log_prob / length ** alpha
+            # Apply length normalization for the final beam selection among the B beams that have made it
+            lengths = (tokens != self._pad).sum(dim=1).clamp(min=1) # Length = how many tokens not padding
+            final_scores = scores / (lengths ** alpha) # Apply length normalization to the sum of log probs
+            best = final_scores.argmax() # Find which of the finished (or truncated) beams is best
+            best_tokens = tokens[best] # Extract the best decoding
 
         self.train()  # Make sure the model is in training mode before exiting
         return decode_caption(best_tokens, self.sp_model) if return_string else best_tokens
 
     def beam_search(self, imgs: torch.Tensor, max_len: int = None, return_strings: bool = True,
-                    beam_size: int = 5, alpha: float = 0.7, ) -> Union[np.ndarray, List[str]]:
+                    beam_size: int = 5, alpha: float = 0.7, ) -> Union[torch.Tensor, List[str]]:
         """
         Given an input batch of images, this method uses beam search to predict the image caption for each
         and outputs a np.ndarray of vocab word indices for each image in the image batch detailing what
@@ -1558,7 +1571,7 @@ class VisionLanguageModel(nn.Module):
             list of length N containing strings for each caption.
         :param beam_size: The number of hypothesis caption roll outs to maintain at any given time.
         :param alpha: A length normalization parameter that penalizes very short caption decodings.
-        :returns: A np.ndarray of size (N, T) containing the integer word indices of the predicted captions
+        :returns: A torch.Tensor of size (N, T) containing the integer word indices of the predicted captions
             or a list of caption sentences (strings).
         """
         was_training = self.training
