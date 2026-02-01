@@ -1575,7 +1575,7 @@ class VisionLanguageModel(nn.Module):
             or a list of caption sentences (strings).
         """
         was_training = self.training
-        outputs = [self._beam_search(imgs[i:i + 1], beam_size, alpha, max_len, return_strings)
-                   for i in range(imgs.shape[0])]
+        outputs = [self._beam_search(img=imgs[i:i + 1], max_len=max_len, return_string=return_strings,
+                                     beam_size=beam_size, alpha=alpha) for i in range(imgs.shape[0])]
         self.train() if was_training else self.eval()
         return outputs
