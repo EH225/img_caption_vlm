@@ -1,4 +1,4 @@
-# Vision-Language Transformer Model for Image Caption Generation Project
+# Vision-Language Transformer Model for Image Captioning
 This repository contains code for training a Vision-Language Transformer model for the task of producing high-quality, descriptive image captions using the [COCO](https://cocodataset.org/#home) dataset. Below is a brief outline of the contents of this repo:
 - `utils.py`: This module contains low-level helper functions used throughout the project.
 - `dataset_utils.py`: This module contains utility functions for pre-processing the COCO dataset and for constructing dataloaders used in training and validation.

@@ -622,11 +622,11 @@ class TrainerCLIP:
                 # Compute the forward pass through the image and text encoders
                 if self.amp_dtype is not None:
                     with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                        img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token only
+                        img_emb = self.vision_proj(self.img_encoder(imgs)[:, 0, :])  # CLS token only
                         txt_emb = self.text_encoder(tokens)  # Normalization takes place within the loss func
                         loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
                 else:
-                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, -1, :])  # CLS token only
+                    img_emb = self.vision_proj(self.img_encoder(imgs)[:, 0, :])  # CLS token only
                     txt_emb = self.text_encoder(tokens)  # Normalization takes place within the loss func
                     loss = clip_loss(img_emb, txt_emb)  # Compute the CLIP cosine loss
 
